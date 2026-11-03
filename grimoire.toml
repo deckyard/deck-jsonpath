@@ -1,0 +1,31 @@
+[book]
+title = "@deckyard/jsonpath"
+description = "Query JSON values with RFC 9535 JSONPath, checked against the official compliance test suite"
+language = "en"
+src = "docs"
+
+[build]
+out = "site"
+clean = true
+jobs = 0
+
+[html]
+theme = "obsidian"
+mode = "auto"
+navPosition = "left"
+tocPosition = "right"
+tocDepth = 3
+sectionNumbers = true
+titleUrl = "https://deckyard.github.io/deck-jsonpath/"
+repoUrl = "https://github.com/deckyard/deck-jsonpath"
+repoLabel = "Source"
+editUrl = "https://github.com/deckyard/deck-jsonpath/edit/main/docs/{path}"
+
+[highlight]
+enabled = true
+
+[search]
+enabled = true
+
+[pdf]
+enabled = false
