@@ -116,6 +116,7 @@ func testComplianceSuite() {
 
 func testPointerTokens() {
     testing.assertEqual(pointerToken("a/b~c"), "a~1b~0c");
+    testing.assertEqual(pointerToken("plain"), "plain");
 }
 
 func testNormalNames() {
@@ -127,6 +128,7 @@ func testNormalNames() {
         normalName(convert.fromCodepoint(1) + convert.fromCodepoint(31)),
         "\\u0001\\u001f");
     testing.assertEqual(normalName("ü€"), "ü€");
+    testing.assertEqual(normalName("plain name"), "plain name");
 }
 
 func testFailNamesTheDeck() {
@@ -136,7 +138,6 @@ func testFailNamesTheDeck() {
         testing.assertEqual($e.kind, ERROR_KIND);
         testing.assertEqual($e.message, "jsonpath: boom");
     }
-    testing.assertEqual(kindAt(json.decode('{"a":1}'), "/b/c"), "missing");
     testing.assertEqual(json.asInt(jsonInt(42)), 42);
     testing.assertEqual(json.asString(jsonString("x\"y")), "x\"y");
 }

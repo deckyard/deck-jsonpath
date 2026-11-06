@@ -134,14 +134,15 @@ func testAbsoluteSubqueriesRunOnce() {
     testing.assertEqual(len(query($doc, "$.items[?count($.items[*]) == 3]")), 3);
     testing.assertEqual(len(query($doc, "$.items[?value($.names.x) == @]")), 1);
     testing.assertEqual(len(query($doc, "$.items[?$.nope]")), 0);
-    def p as Path init prepare(compile("$.items[?@ <= $.max]"), $doc);
-    def cached as int init 0;
-    for (def n in $p.nodes) {
-        if ($n.kind == KCACHED) {
-            $cached = $cached + 1;
-        }
-    }
-    testing.assertEqual($cached, 1);
+    def p as Path init compile("$.items[?@ <= $.max]");
+    def before as list of Node init $p.nodes;
+    def w as Work init run($doc, $p, 0);
+    testing.assertEqual(len($w.count), 1);
+    testing.assertEqual($p.nodes, $before);
+    testing.assertEqual($p.nodes[$p.root].start, 1);
+    def plain as Path init compile("$.items[?@ <= 2]");
+    testing.assertEqual($plain.nodes[$plain.root].start, 0);
+    testing.assertEqual(len(run($doc, $plain, 0).count), 0);
 }
 
 func testRunawayQueriesStop() {
@@ -153,7 +154,7 @@ func testRunawayQueriesStop() {
         find($doc, $p);
         missed("a runaway query finished");
     } catch (e) {
-        testing.assertTrue(strings.contains($e.message, "more than 20000 nodes"));
+        testing.assertTrue(strings.contains($e.message, "more than 20000 nodes of work"));
     }
     $p.maxNodes = 10;
     try {
@@ -161,8 +162,138 @@ func testRunawayQueriesStop() {
         find(json.decode("[[[[[[[[[[[[1]]]]]]]]]]]]"), $p);
         missed("a deep descent passed a limit of 10");
     } catch (e) {
-        testing.assertTrue(strings.contains($e.message, "visited more than 10 nodes"));
+        testing.assertTrue(strings.contains($e.message, "more than 10 nodes of work"));
     }
+}
+
+/**
+ * Run a query with a work limit.
+ *
+ * @param doc {json.Value} the document
+ * @param query {string} the query
+ * @param limit {int} `maxNodes`
+ * @return {string} "" when it finished, else the error message
+ */
+func limited(doc as json.Value, query as string, limit as int) {
+    def p as Path init compile($query);
+    $p.maxNodes = $limit;
+    try {
+        find($doc, $p);
+    } catch (e) {
+        testing.assertEqual($e.kind, ERROR_KIND);
+        return $e.message;
+    }
+    return "";
+}
+
+func testWorkIsCountedPerFind() {
+    def grid as json.Value init json.decode("[[1,2],[3,4]]");
+    testing.assertEqual(limited($grid, "$[*][*]", 6), "");
+    testing.assertTrue(strings.contains(limited($grid, "$[*][*]", 5), "more than 5 nodes"));
+    # Filter subqueries count too: 2 tests, then 2 elements per subquery.
+    testing.assertEqual(limited($grid, "$[?@[*]]", 6), "");
+    testing.assertTrue(strings.contains(limited($grid, "$[?@[*]]", 5), "more than 5 nodes"));
+    def chain as json.Value init json.decode(strings.repeat("[", 60) + strings.repeat("]", 60));
+    testing.assertTrue(strings.contains(limited($chain, "$..[?@..[?@..*]]", 5000), "more than"));
+    def short as json.Value init json.decode(strings.repeat("[", 20) + strings.repeat("]", 20));
+    testing.assertEqual(len(query($short, "$..[?@..[?@..*]]")), 17);
+}
+
+func testWorkIsCheckedBeforeItIsDone() {
+    def wide as list of json.Value init [];
+    def i as int init 0;
+    while ($i < 2000) {
+        $wide[] = jsonInt($i);
+        $i = $i + 1;
+    }
+    def stars as string init "$[" + strings.join(lists.map(lists.range(0, 200), star), ",") + "]";
+    testing.assertEqual(
+        limited(json.list($wide), $stars, 1000),
+        "jsonpath: the query needs more than 1000 nodes of work");
+}
+
+/**
+ * A wildcard selector.
+ *
+ * @param i {int} ignored
+ * @return {string} `*`
+ */
+func star(i as int) {
+    return "*";
+}
+
+func badPath() {
+    def p as Path;
+    find(json.decode("[1]"), $p);
+}
+
+func testFindRefusesAForgedPath() {
+    testing.assertThrows("badPath", ERROR_KIND);
+    def p as Path init compile("$[0]");
+    $p.root = 99;
+    try {
+        find(json.decode("[1]"), $p);
+        missed("a forged root ran");
+    } catch (e) {
+        testing.assertEqual($e.kind, ERROR_KIND);
+    }
+}
+
+func testTrackBuildsOnlyWhatIsAsked() {
+    def doc as json.Value init json.decode('{"a":[1]}');
+    def p as Path init compile("$.a[0]");
+    def w as Work init run($doc, $p, TRACK_POINTER);
+    testing.assertEqual([$w.out[$w.from].ptr, $w.out[$w.from].norm], ["/a/0", ""]);
+    $w = run($doc, $p, TRACK_PATH);
+    testing.assertEqual([$w.out[$w.from].ptr, $w.out[$w.from].norm], ["", "$['a'][0]"]);
+}
+
+func testDocumentPatternsAreTranslatedOncePerRun() {
+    def doc as json.Value init json.decode('[{"s":"ab","p":"a."},{"s":"xy","p":"a."},{"s":"c","p":"c"}]');
+    def w as Work init run($doc, compile("$[?match(@.s, @.p)]"), 0);
+    testing.assertEqual($w.n - $w.from, 2);
+    testing.assertEqual(len($w.rx), 2);
+}
+
+/**
+ * Remove every node a query selects, as `docs/index.md` shows: deepest and
+ * highest index first, each pointer once.
+ *
+ * @param doc {json.Value} the document
+ * @param query {string} the query
+ * @return {json.Value} the document without those nodes
+ */
+func removeAll(doc as json.Value, query as string) {
+    def byKey as map of string to string init {};
+    for (def ptr in paths($doc, $query)) {
+        def parts as list of string init [];
+        for (def token in strings.split($ptr, "/")) {
+            if (regex.matches("^(0|[1-9][0-9]*)$", $token)) {
+                $parts[] = strings.repeat("0", 16 - len($token)) + $token;
+            } else {
+                $parts[] = $token;
+            }
+        }
+        $byKey[strings.join($parts, "/")] = $ptr;
+    }
+    for (def key in lists.reverse(lists.sort(maps.keys($byKey)))) {
+        $doc = json.remove($doc, $byKey[$key]);
+    }
+    return $doc;
+}
+
+func testRemovingWhatAQueryFound() {
+    def doc as json.Value init json.decode('["a","b","c","d"]');
+    testing.assertEqual(json.encode(removeAll($doc, "$[3,1]")), '["a","c"]');
+    testing.assertEqual(json.encode(removeAll($doc, "$[::-1]")), "[]");
+    testing.assertEqual(json.encode(removeAll($doc, "$[1,1,0]")), '["c","d"]');
+    def big as json.Value init json.decode('{"x":[0,1,2,3,4,5,6,7,8,9,10,11],"y":[[1],[2]]}');
+    testing.assertEqual(
+        json.encode(removeAll($big, "$.x[2,10,9]")),
+        '{"x":[0,1,3,4,5,6,7,8,11],"y":[[1],[2]]}');
+    testing.assertEqual(
+        json.encode(removeAll($big, "$.y..[0]")),
+        '{"x":[0,1,2,3,4,5,6,7,8,9,10,11],"y":[[]]}');
 }
 
 func testLiteralPatternsAreTranslatedOnce() {

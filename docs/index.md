@@ -12,9 +12,12 @@ passes. Pure computation: no capability, and it runs on `jennifer-tiny`.
 
 ## Conventions
 
-Snippets assume this import:
+Snippets assume the `use` and `import` lines of this example:
 
 ```jennifer
+use fs;
+use io;
+use json;
 import "@deckyard/jsonpath/" as jsonpath;
 
 def doc as json.Value init json.decode(fs.readString("store.json"));
@@ -23,7 +26,7 @@ for (def title in jsonpath.query($doc, "$.store.book[?@.price < 10].title")) {
 }
 ```
 
-Three ways to ask, for one query string:
+Three functions take a query string:
 
 | Function | Gives |
 |---|---|
@@ -37,17 +40,38 @@ the order RFC 9535 defines; an object's members in document order.
 
 ## Changing what a query found
 
-The pointers feed the `json` writers. Removing shifts the later elements of
-an array, so remove from the last pointer to the first:
+The pointers feed the `json` writers. Removing an array element shifts the
+ones after it, and `paths` returns RFC 9535 order, which is not document
+order for `$[3,1]` or `$[::-1]` and may repeat a node (`$[1,1]`). So remove
+each pointer once, highest array index first and descendants before their
+ancestors: pad every index token to 16 digits and sort the keys in reverse.
 
 ```jennifer
-def ptrs as list of string init jsonpath.paths($doc, "$..book[?@.price > 10]");
-def i as int init len($ptrs) - 1;
-while ($i >= 0) {
-    $doc = json.remove($doc, $ptrs[$i]);
-    $i = $i - 1;
+use lists;
+use maps;
+use regex;
+use strings;
+
+def byKey as map of string to string init {};
+for (def ptr in jsonpath.paths($doc, "$..book[?@.price > 10]")) {
+    def parts as list of string init [];
+    for (def token in strings.split($ptr, "/")) {
+        if (regex.matches("^(0|[1-9][0-9]*)$", $token)) {
+            $parts[] = strings.repeat("0", 16 - len($token)) + $token;
+        } else {
+            $parts[] = $token;
+        }
+    }
+    $byKey[strings.join($parts, "/")] = $ptr;
+}
+for (def key in lists.reverse(lists.sort(maps.keys($byKey)))) {
+    $doc = json.remove($doc, $byKey[$key]);
 }
 ```
+
+For a query whose results are in document order without repeats (names,
+wildcards, filters, `..`, forward slices), removing from the last pointer to
+the first is enough.
 
 ## Errors
 
@@ -56,17 +80,22 @@ Every failure is `Error{kind: "jsonpath"}`. A query that is not valid RFC
 reason and the position:
 
 ```
-jsonpath: only a singular query can be compared at position 9 of "$[?@.* == 1]"
+jsonpath: only a singular query can be compared at position 10 of "$[?@.* == 1]"
 ```
 
 That includes the type rules of RFC 9535 section 2.4.3: an unknown function,
 a wrong argument count, a query that can select several nodes where one
 value is needed, a function returning a value used as a test. `isValid` asks
-without throwing. A query over its node limit fails while it runs; see
-[Untrusted queries](untrusted.md).
+without throwing. So does a literal `match` / `search` pattern that RE2
+cannot compile ([Query syntax](syntax.md#functions)).
 
-A valid query never fails on a document: a selector that does not apply
-(a name on an array, an index past the end) selects nothing.
+A valid query fails on a document only when it needs more work than its
+node limit ([Untrusted queries](untrusted.md)) or when a pattern taken from
+the document cannot be compiled by RE2. A selector that does not apply (a
+name on an array, an index past the end) selects nothing.
+
+Error messages quote at most 64 code points of the query, around the error
+position, so a long query from a user does not produce a long message.
 
 ## Requirements
 

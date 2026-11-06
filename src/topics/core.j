@@ -12,9 +12,11 @@ export def const ERROR_KIND as string init "jsonpath";
 export def const MAX_NESTING as int init 64;
 
 /**
- * The most nodes one segment may produce. Chained descendant segments
- * (`$..*..*..*`) multiply; past this a query fails instead of exhausting
- * memory.
+ * The default `Path.maxNodes`: the most nodes of work one run of a query may
+ * do. Every node a selector produces, every child a filter tests, every
+ * container a descendant segment visits, every name or index selector per
+ * input node and every step of a singular query in a filter counts, inside
+ * filter subqueries too. At 10 to 25 µs per node this is 10 to 25 s.
  */
 export def const MAX_NODES as int init 1000000;
 
@@ -36,8 +38,9 @@ def const KTEST as int init 11;
 def const KCMP as int init 12;
 def const KLITERAL as int init 13;
 def const KFUNC as int init 14;
-# A `$` query inside a filter, run once: `num` is its node count, `lit` the first.
-def const KCACHED as int init 15;
+
+# How many code points of a query an error message quotes.
+def const EXCERPT as int init 64;
 
 # Braces, which no string literal can hold without starting an interpolation.
 def const LBRACE as string init "\{";
@@ -55,15 +58,16 @@ def const TNODES as int init 3;
  * @field kind {int} what the node is
  * @field text {string} a member name, a function name or an operator
  * @field num {int} an index; a query's singular flag (1); a segment's
- *   descendant flag (1); a function's result type; a cached query's count
+ *   descendant flag (1); a function's result type
  * @field start {int} a slice's start; for `match` / `search` with a literal
- *   pattern, 1 when `lit` holds it translated, 2 when it is invalid
+ *   pattern, 1 when `lit` holds it translated, 2 when it is invalid; for the
+ *   root query, 1 when a filter holds a `$` query
  * @field stop {int} a slice's end
- * @field step {int} a slice's step
+ * @field step {int} a slice's step; for an expression, its static work
+ *   (singular query steps), -1 when it runs subqueries
  * @field hasStart {bool} the slice gives a start
  * @field hasStop {bool} the slice gives an end
- * @field lit {json.Value} a literal's value; a translated pattern; a cached
- *   query's first node
+ * @field lit {json.Value} a literal's value; a translated pattern
  * @field kids {list of int} the child nodes
  */
 export def struct Node {
@@ -86,8 +90,8 @@ export def struct Node {
  * @field source {string} the query as written
  * @field nodes {list of Node} the parsed form; read it through the deck
  * @field root {int} the index of the query node
- * @field maxNodes {int} the most nodes one segment may produce; `MAX_NODES`
- *   unless lowered, e.g. for queries from untrusted users
+ * @field maxNodes {int} the most nodes of work one `find` may do (see
+ *   `MAX_NODES`); `MAX_NODES` unless lowered, e.g. for untrusted queries
  */
 export def struct Path {
     source as string,
@@ -120,30 +124,15 @@ func fail(message as string) {
 }
 
 /**
- * The type of a node, `missing` when the pointer does not resolve. Jennifer
- * 0.25.0's `json.typeOf` throws for a missing member instead.
- *
- * @param v {json.Value} the document
- * @param ptr {string} the pointer; "" for the root
- * @return {string} `null`, `bool`, `int`, `float`, `string`, `list`, `map` or `missing`
- */
-func kindAt(v as json.Value, ptr as string) {
-    if ($ptr == "") {
-        return json.typeOf($v);
-    }
-    if (not json.has($v, $ptr)) {
-        return "missing";
-    }
-    return json.typeOf($v, $ptr);
-}
-
-/**
  * Escape a member name for a JSON Pointer.
  *
  * @param name {string} the name
  * @return {string} the name with `~` and `/` escaped
  */
 func pointerToken(name as string) {
+    if (not strings.contains($name, "~") and not strings.contains($name, "/")) {
+        return $name;
+    }
     return strings.replace(strings.replace($name, "~", "~0"), "/", "~1");
 }
 
@@ -155,6 +144,9 @@ func pointerToken(name as string) {
  * @return {string} the name between the quotes of `['...']`
  */
 func normalName(name as string) {
+    if (not regex.matches("['\\\\\\x00-\\x1f]", $name)) {
+        return $name;
+    }
     def out as list of string init [];
     for (def ch in strings.chars($name)) {
         def cp as int init convert.toCodepoint($ch);

@@ -26,7 +26,9 @@ into `vendor/deckyard/jsonpath/`.
 ## Usage
 
 ```jennifer
+use fs;
 use io;
+use json;
 import "@deckyard/jsonpath/" as jsonpath;
 
 def doc as json.Value init json.decode(fs.readString("store.json"));

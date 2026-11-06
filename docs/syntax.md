@@ -20,7 +20,7 @@ segment takes the nodes so far and selects new ones.
 | `$.book[?@.price < 10]` | the books cheaper than 10 |
 
 Names in brackets take single or double quotes and JSON-style escapes
-(`\n`, `é`, `\'`). A name after a dot is letters, digits and `_`, plus
+(`\n`, `\u00e9`, `\'`). A name after a dot is letters, digits and `_`, plus
 anything beyond ASCII, and does not start with a digit.
 
 ## Filters
@@ -49,7 +49,7 @@ jsonpath.query($doc, "$..book[?@.price <= $.limits.max]");
 
 | Function | Takes | Gives |
 |---|---|---|
-| `length(v)` | a value | characters of a string, elements of an array, members of an object |
+| `length(v)` | a value | code points of a string, elements of an array, members of an object |
 | `count(q)` | a query | how many nodes it selects |
 | `value(q)` | a query | the one node it selects; nothing for none or several |
 | `match(v, re)` | a string, a pattern | true when the whole string matches |
@@ -66,6 +66,13 @@ a small subset shared by the common regex engines: characters, `.`, classes
 `[a-z]`, `[^...]`, Unicode categories `\p{L}` / `\P{Nd}`, groups, `|`, and
 the quantifiers `*` `+` `?` `{n,m}`. There are no `\d`, `\w`, `\s`, lazy
 quantifiers, backreferences or lookaround; a pattern using them, or any
-invalid pattern, makes `match` and `search` false rather than failing. `.`
-matches any character but a line break. Inside a query a backslash is
-itself escaped: `'\\.'` is a pattern matching a dot.
+other invalid pattern (`[a-b-c]`, `[z-a]`, `x{2,1}`), makes `match` and
+`search` false rather than failing. In a class, `-` is a literal only first
+or last. `.` matches any character but a line break. Inside a query a
+backslash is itself escaped: `'\\.'` is a pattern matching a dot.
+
+A valid pattern that RE2 cannot compile throws `Error{kind: "jsonpath"}`
+with RE2's reason: a repeat count over 1000 (`a{1001}`), or a program over
+RE2's size limits (32 KiB of pattern, 50,000 instructions). A literal
+pattern fails in `compile`; one taken from the document fails while the
+query runs.

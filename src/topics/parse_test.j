@@ -100,3 +100,14 @@ func testMessagesQuoteTheQueryReadably() {
         'jsonpath: expected a query, a literal or a function, found "]" at position 8 of "$[?@.a <]"');
     testing.assertEqual(quoted("a<b>&\"\n"), "\"a<b>&\\\"\\n\"");
 }
+
+func testErrorMessagesAreBounded() {
+    def long as string init "$.a" + strings.repeat("x", 100000) + "]";
+    def why as string init whyNot($long);
+    testing.assertTrue(len($why) < 200);
+    testing.assertTrue(strings.contains($why, "at position 100003 of ...\""));
+    testing.assertTrue(strings.endsWith($why, "x]\""));
+    testing.assertTrue(len(whyNot("$[?" + strings.repeat("a", 5000) + "(@)]")) < 200);
+    testing.assertTrue(len(whyNot("$[?@ == " + strings.repeat("1", 5000) + "e]")) < 200);
+    testing.assertEqual(cut("short"), "short");
+}

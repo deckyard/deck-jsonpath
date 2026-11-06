@@ -16,7 +16,7 @@ import "@deckyard/jsonpath/" as jsonpath;
 |---|---|---|
 | `ERROR_KIND` | `"jsonpath"` | the `kind` of every error the deck throws |
 | `MAX_NESTING` | `64` | how deep parentheses, filters and calls may nest |
-| `MAX_NODES` | `1000000` | the default `Path.maxNodes` |
+| `MAX_NODES` | `1000000` | the default `Path.maxNodes`, the work one run of a query may do |
 | `MAX_INDEX` | `9007199254740991` | the largest index or slice bound, 2^53 - 1 |
 
 ## Types
@@ -30,7 +30,7 @@ A parsed query, from `compile`.
 | `source as string` | the query as written |
 | `nodes as list of Node` | the parsed form |
 | `root as int` | the query node's index |
-| `maxNodes as int` | the most nodes one segment may produce; lower it for untrusted queries |
+| `maxNodes as int` | the most nodes of work one `find` may do, subqueries included; lower it for untrusted queries |
 
 ### `Match`
 
@@ -49,9 +49,9 @@ One node of the parsed form; read it through the deck.
 | `kind as int` | what the node is |
 | `text as string` | a name, a function name or an operator |
 | `num as int` | an index, a flag or a type |
-| `start as int` | a slice's start |
+| `start as int` | a slice's start; a literal pattern's state; the root's `$`-subquery flag |
 | `stop as int` | a slice's end |
-| `step as int` | a slice's step |
+| `step as int` | a slice's step; an expression's static work |
 | `hasStart as bool` | the slice gives a start |
 | `hasStop as bool` | the slice gives an end |
 | `lit as json.Value` | a literal's value |

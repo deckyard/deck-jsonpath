@@ -6,8 +6,8 @@
 # functions. Spliced into jsonpath.j via include.
 
 /**
- * A node during evaluation. `ptr` and `norm` are built only for the query
- * the caller asked for, never for the queries inside a filter.
+ * A node during evaluation. `ptr` and `norm` are built only when the caller
+ * asked for them, never for the queries inside a filter.
  *
  * @field value {json.Value} the value
  * @field ptr {string} its JSON Pointer
@@ -19,13 +19,47 @@ def struct Loc {
     norm as string
 };
 
+# What `run` builds for each node: bits of a `track` argument.
+def const TRACK_POINTER as int init 1;
+def const TRACK_PATH as int init 2;
+
+/**
+ * The state of one run of a query, passed in place (`$w = f($w, ...)`)
+ * through the evaluator. Every query, subqueries included, appends its nodes
+ * to `out`; a subquery's are dropped again by resetting `n`.
+ *
+ * @field out {list of Loc} the node buffer; entries from `n` on are stale
+ * @field n {int} how many entries of `out` are live
+ * @field from {int} where the result of the last `selectQuery` starts in `out`
+ * @field used {int} the work so far, in nodes; at most `Path.maxNodes`
+ * @field hit {bool} the result of the last `evalLogical`
+ * @field val {Val} the result of the last `evalValue`
+ * @field other {Val} the result of the last `evalValue` for a right operand
+ * @field count {map of int to int} per `$` query inside a filter: its node count
+ * @field first {map of int to json.Value} per `$` query inside a filter: its first node
+ * @field rx {map of string to Rx} patterns from the document, translated
+ */
+def struct Work {
+    out as list of Loc,
+    n as int,
+    from as int,
+    used as int,
+    hit as bool,
+    val as Val,
+    other as Val,
+    count as map of int to int,
+    first as map of int to json.Value,
+    rx as map of string to Rx
+};
+
 /**
  * Parse a query once, to run it against many documents with `find`.
  *
  * @param path {string} the JSONPath query, e.g. `$.store.book[?@.price < 10].title`
  * @return {Path} the parsed query
  * @throws {Error} kind `"jsonpath"` when the query is not valid RFC 9535,
- *   naming the position of the first error
+ *   naming the position of the first error, or when a literal `match` /
+ *   `search` pattern is valid I-Regexp that RE2 cannot compile
  * @example
  *   def cheap as jsonpath.Path init jsonpath.compile("$..book[?@.price < 10]");
  */
@@ -36,7 +70,7 @@ export func compile(path as string) {
         if ($e.kind == ERROR_KIND) {
             throw $e;
         }
-        fail("cannot parse " + quoted($path) + ": " + $e.message);
+        fail("cannot parse " + quoted(cut($path)) + ": " + $e.message);
     }
 }
 
@@ -62,12 +96,18 @@ export func isValid(path as string) {
  * @param doc {json.Value} the document
  * @param path {Path} the query, from `compile`
  * @return {list of Match} the matches; empty when nothing matches
+ * @throws {Error} kind `"jsonpath"` when the query needs more than
+ *   `path.maxNodes` nodes of work, when a `match` / `search` pattern from
+ *   the document is valid I-Regexp that RE2 cannot compile, or when `path`
+ *   does not come from `compile`
  */
 export func find(doc as json.Value, path as Path) {
-    def p as Path init prepare($path, $doc);
+    def w as Work init run($doc, $path, TRACK_POINTER | TRACK_PATH);
     def out as list of Match init [];
-    for (def loc in selectQuery($p, $p.root, $doc, $doc, true)) {
-        $out[] = Match{value: $loc.value, pointer: $loc.ptr, path: $loc.norm};
+    def i as int init $w.from;
+    while ($i < $w.n) {
+        $out[] = Match{value: $w.out[$i].value, pointer: $w.out[$i].ptr, path: $w.out[$i].norm};
+        $i = $i + 1;
     }
     return $out;
 }
@@ -78,13 +118,17 @@ export func find(doc as json.Value, path as Path) {
  * @param doc {json.Value} the document
  * @param path {string} the query
  * @return {list of json.Value} the values, in order
- * @throws {Error} kind `"jsonpath"` when the query is not valid
+ * @throws {Error} kind `"jsonpath"` when the query is not valid, when it
+ *   needs more than `MAX_NODES` nodes of work, or when a pattern is valid
+ *   I-Regexp that RE2 cannot compile
  */
 export func query(doc as json.Value, path as string) {
-    def p as Path init prepare(compile($path), $doc);
+    def w as Work init run($doc, compile($path), 0);
     def out as list of json.Value init [];
-    for (def loc in selectQuery($p, $p.root, $doc, $doc, false)) {
-        $out[] = $loc.value;
+    def i as int init $w.from;
+    while ($i < $w.n) {
+        $out[] = $w.out[$i].value;
+        $i = $i + 1;
     }
     return $out;
 }
@@ -96,12 +140,17 @@ export func query(doc as json.Value, path as string) {
  * @param doc {json.Value} the document
  * @param path {string} the query
  * @return {list of string} the pointers, in order; `""` is the root
- * @throws {Error} kind `"jsonpath"` when the query is not valid
+ * @throws {Error} kind `"jsonpath"` when the query is not valid, when it
+ *   needs more than `MAX_NODES` nodes of work, or when a pattern is valid
+ *   I-Regexp that RE2 cannot compile
  */
 export func paths(doc as json.Value, path as string) {
+    def w as Work init run($doc, compile($path), TRACK_POINTER);
     def out as list of string init [];
-    for (def m in find($doc, compile($path))) {
-        $out[] = $m.pointer;
+    def i as int init $w.from;
+    while ($i < $w.n) {
+        $out[] = $w.out[$i].ptr;
+        $i = $i + 1;
     }
     return $out;
 }
@@ -112,67 +161,152 @@ export func paths(doc as json.Value, path as string) {
  * @param doc {json.Value} the document
  * @param path {string} the query
  * @return {list of string} the paths, e.g. `$['store']['book'][0]`
- * @throws {Error} kind `"jsonpath"` when the query is not valid
+ * @throws {Error} kind `"jsonpath"` when the query is not valid, when it
+ *   needs more than `MAX_NODES` nodes of work, or when a pattern is valid
+ *   I-Regexp that RE2 cannot compile
  */
 export func normalizedPaths(doc as json.Value, path as string) {
+    def w as Work init run($doc, compile($path), TRACK_PATH);
     def out as list of string init [];
-    for (def m in find($doc, compile($path))) {
-        $out[] = $m.path;
+    def i as int init $w.from;
+    while ($i < $w.n) {
+        $out[] = $w.out[$i].norm;
+        $i = $i + 1;
     }
     return $out;
 }
 
 /**
- * Run every `$` query inside a filter once, before the filter tests each
- * node: its result does not depend on `@`. A query such as
- * `$..*[?count($..*) > 0]` would otherwise walk the document once per node.
- * Inner queries have lower indexes than outer ones, so they are cached first.
+ * Run a parsed query. First every `$` query inside a filter runs once and
+ * its count and first node are kept in `Work`: its result does not depend
+ * on `@`, and `$..*[?count($..*) > 0]` would otherwise walk the document
+ * once per node. Inner queries have lower indexes than outer ones, so they
+ * are cached first. The `Path` itself is only read, never copied.
  *
- * @param path {Path} the parsed query
  * @param doc {json.Value} the document
- * @return {Path} the query with those subqueries replaced by their summary
+ * @param path {Path} the parsed query
+ * @param track {int} `TRACK_POINTER` and `TRACK_PATH` bits: what to build
+ * @return {Work} the state; the result is `out[from:n]`
+ * @throws {Error} kind `"jsonpath"` when `path` is no compiled query, or
+ *   the query needs more than `path.maxNodes` nodes of work
  */
-func prepare(path as Path, doc as json.Value) {
+func run(doc as json.Value, path as Path, track as int) {
+    if ($path.root < 0 or $path.root >= len($path.nodes) or
+        $path.nodes[$path.root].kind != KQUERY) {
+        fail("not a compiled Path; build one with compile");
+    }
+    def w as Work init Work{
+        out: [],
+        n: 0,
+        from: 0,
+        used: 0,
+        hit: false,
+        val: nothing(),
+        other: nothing(),
+        count: {},
+        first: {},
+        rx: {}
+    };
     def i as int init 0;
+    if ($path.nodes[$path.root].start != 1) {
+        $i = len($path.nodes);
+    }
     while ($i < len($path.nodes)) {
         if ($i != $path.root and $path.nodes[$i].kind == KQUERY and $path.nodes[$i].text == "$") {
-            def locs as list of Loc init selectQuery($path, $i, $doc, $doc, false);
-            def cached as Node init newNode(KCACHED);
-            $cached.num = len($locs);
-            if (len($locs) > 0) {
-                $cached.lit = $locs[0].value;
+            def mark as int init $w.n;
+            $w = selectQuery($path, $i, $doc, $doc, 0, $w);
+            $w.count[$i] = $w.n - $w.from;
+            if ($w.n > $w.from) {
+                $w.first[$i] = $w.out[$w.from].value;
             }
-            $path.nodes[$i] = $cached;
+            $w.n = $mark;
         }
         $i = $i + 1;
     }
-    return $path;
+    $w = selectQuery($path, $path.root, $doc, $doc, $track, $w);
+    return $w;
+}
+
+/**
+ * Count work against the limit before doing it.
+ *
+ * @param w {Work} the state
+ * @param nodes {int} the nodes about to be produced, tested or visited
+ * @param limit {int} `Path.maxNodes`
+ * @return {Work} the state with the work counted
+ * @throws {Error} kind `"jsonpath"` when the total would pass `limit`
+ */
+func spend(w as Work, nodes as int, limit as int) {
+    if ($w.used + $nodes > $limit) {
+        overLimit($limit);
+    }
+    $w.used = $w.used + $nodes;
+    return $w;
+}
+
+/**
+ * Raise the work-limit error.
+ *
+ * @param limit {int} `Path.maxNodes`
+ * @throws {Error} always, with `kind` `"jsonpath"`
+ */
+func overLimit(limit as int) {
+    fail("the query needs more than " + convert.toString($limit) + " nodes of work");
+}
+
+/**
+ * Append a node to the buffer. The per-node loops inline this.
+ *
+ * @param w {Work} the state
+ * @param loc {Loc} the node
+ * @return {Work} the state holding it
+ */
+func put(w as Work, loc as Loc) {
+    if ($w.n < len($w.out)) {
+        $w.out[$w.n] = $loc;
+    } else {
+        $w.out[] = $loc;
+    }
+    $w.n = $w.n + 1;
+    return $w;
 }
 
 /**
  * Run a query node from its identifier: `$` from the root, `@` from the
- * current node.
+ * current node. Each segment reads the previous one's nodes from
+ * `out[from:to]` and appends its own after them.
  *
  * @param path {Path} the parsed query
  * @param q {int} the query node
  * @param root {json.Value} the document
  * @param cur {json.Value} the current node of a filter
- * @param track {bool} build pointers and normalized paths
- * @return {list of Loc} the selected nodes
+ * @param track {int} what to build, `TRACK_POINTER` / `TRACK_PATH` bits
+ * @param w {Work} the state
+ * @return {Work} the state; the selected nodes are `out[from:n]`
  */
-func selectQuery(path as Path, q as int, root as json.Value, cur as json.Value, track as bool) {
+func selectQuery(
+    path as Path,
+    q as int,
+    root as json.Value,
+    cur as json.Value,
+    track as int,
+    w as Work) {
     def start as json.Value init $cur;
     if ($path.nodes[$q].text == "$") {
         $start = $root;
     }
-    def locs as list of Loc init [Loc{value: $start, ptr: "", norm: "$"}];
+    $w = put($w, Loc{value: $start, ptr: "", norm: "$"});
+    def from as int init $w.n - 1;
     for (def seg in $path.nodes[$q].kids) {
-        $locs = applySegment($path, $seg, $locs, $root, $track);
-        if (len($locs) == 0) {
+        def end as int init $w.n;
+        $w = applySegment($path, $seg, $from, $end, $root, $track, $w);
+        $from = $end;
+        if ($w.n == $from) {
             break;
         }
     }
-    return $locs;
+    $w.from = $from;
+    return $w;
 }
 
 /**
@@ -180,32 +314,54 @@ func selectQuery(path as Path, q as int, root as json.Value, cur as json.Value, 
  *
  * @param path {Path} the parsed query
  * @param seg {int} the segment node
- * @param locs {list of Loc} the input nodes
+ * @param from {int} the first input node in `out`
+ * @param end {int} the end of the input nodes in `out`
  * @param root {json.Value} the document
- * @param track {bool} build pointers and normalized paths
- * @return {list of Loc} the output nodes
+ * @param track {int} what to build
+ * @param w {Work} the state
+ * @return {Work} the state with the output nodes appended
  */
 func applySegment(
     path as Path,
     seg as int,
-    locs as list of Loc,
+    from as int,
+    end as int,
     root as json.Value,
-    track as bool) {
-    def out as list of Loc init [];
+    track as int,
+    w as Work) {
     def descendant as bool init $path.nodes[$seg].num == 1;
-    for (def loc in $locs) {
-        if ($descendant) {
-            for (def d in descendants($loc, $track, $path.maxNodes)) {
-                $out = applySelectors($path, $seg, $d, $root, $track, $out);
-            }
-        } else {
-            $out = applySelectors($path, $seg, $loc, $root, $track, $out);
-        }
-        if (len($out) > $path.maxNodes) {
-            fail("a segment selected more than " + convert.toString($path.maxNodes) + " nodes");
+    # Name and index selectors take one node of work per input node, counted
+    # up front; the other selectors count what they produce or test.
+    def fixed as int init 0;
+    for (def sel in $path.nodes[$seg].kids) {
+        if ($path.nodes[$sel].kind == KNAME or $path.nodes[$sel].kind == KINDEX) {
+            $fixed = $fixed + 1;
         }
     }
-    return $out;
+    if (not $descendant) {
+        $w = spend($w, ($end - $from) * $fixed, $path.maxNodes);
+    }
+    def i as int init $from;
+    while ($i < $end) {
+        # A copy: passing $w.out[$i] beside $w would copy all of $w.
+        def loc as Loc init $w.out[$i];
+        if ($descendant) {
+            def ds as list of Loc init descendants(
+                $loc,
+                $track,
+                $path.maxNodes - $w.used,
+                $path.maxNodes);
+            $w.used = $w.used + len($ds);
+            $w = spend($w, len($ds) * $fixed, $path.maxNodes);
+            for (def d in $ds) {
+                $w = applySelectors($path, $seg, $d, $root, $track, $w);
+            }
+        } else {
+            $w = applySelectors($path, $seg, $loc, $root, $track, $w);
+        }
+        $i = $i + 1;
+    }
+    return $w;
 }
 
 /**
@@ -215,50 +371,58 @@ func applySegment(
  * @param seg {int} the segment node
  * @param loc {Loc} the node
  * @param root {json.Value} the document
- * @param track {bool} build pointers and normalized paths
- * @param out {list of Loc} the results so far
- * @return {list of Loc} the results with this node's added
+ * @param track {int} what to build
+ * @param w {Work} the state
+ * @return {Work} the state with this node's results appended
  */
 func applySelectors(
     path as Path,
     seg as int,
     loc as Loc,
     root as json.Value,
-    track as bool,
-    out as list of Loc) {
+    track as int,
+    w as Work) {
     for (def sel in $path.nodes[$seg].kids) {
-        $out = applySelector($path, $sel, $loc, $root, $track, $out);
+        $w = applySelector($path, $sel, $loc, $root, $track, $w);
     }
-    return $out;
+    return $w;
 }
 
 /**
- * Apply one selector to one node.
+ * Apply one selector to one node, counting its work first.
  *
  * @param path {Path} the parsed query
  * @param sel {int} the selector node
  * @param loc {Loc} the node
  * @param root {json.Value} the document
- * @param track {bool} build pointers and normalized paths
- * @param out {list of Loc} the results so far
- * @return {list of Loc} the results with this selector's added
+ * @param track {int} what to build
+ * @param w {Work} the state
+ * @return {Work} the state with this selector's results appended
  */
 func applySelector(
     path as Path,
     sel as int,
     loc as Loc,
     root as json.Value,
-    track as bool,
-    out as list of Loc) {
+    track as int,
+    w as Work) {
     def kind as int init $path.nodes[$sel].kind;
     def type as string init json.typeOf($loc.value);
     if ($kind == KNAME) {
         def name as string init $path.nodes[$sel].text;
-        if ($type == "map" and json.has($loc.value, "/" + pointerToken($name))) {
-            $out[] = member($loc, $name, $track);
+        def token as string init pointerToken($name);
+        def ptr as string init "/" + $token;
+        if ($type == "map" and json.has($loc.value, $ptr)) {
+            def next as Loc init member($loc, $name, $token, json.get($loc.value, $ptr), $track);
+            if ($w.n < len($w.out)) {
+                $w.out[$w.n] = $next;
+            } else {
+                $w.out[] = $next;
+            }
+            $w.n = $w.n + 1;
         }
     } elseif ($kind == KWILD) {
-        $out = children($loc, $track, $out);
+        $w = children($path, $loc, $track, $w);
     } elseif ($kind == KINDEX and $type == "list") {
         def size as int init json.length($loc.value);
         def i as int init $path.nodes[$sel].num;
@@ -266,54 +430,101 @@ func applySelector(
             $i = $i + $size;
         }
         if ($i >= 0 and $i < $size) {
-            $out[] = element($loc, $i, $track);
+            def next as Loc init element($loc, $i, $track);
+            if ($w.n < len($w.out)) {
+                $w.out[$w.n] = $next;
+            } else {
+                $w.out[] = $next;
+            }
+            $w.n = $w.n + 1;
         }
     } elseif ($kind == KSLICE and $type == "list") {
-        for (def i in sliceIndexes($path.nodes[$sel], json.length($loc.value))) {
-            $out[] = element($loc, $i, $track);
+        def picked as list of int init sliceIndexes($path.nodes[$sel], json.length($loc.value));
+        $w = spend($w, len($picked), $path.maxNodes);
+        for (def i in $picked) {
+            def next as Loc init element($loc, $i, $track);
+            if ($w.n < len($w.out)) {
+                $w.out[$w.n] = $next;
+            } else {
+                $w.out[] = $next;
+            }
+            $w.n = $w.n + 1;
         }
     } elseif ($kind == KFILTER and ($type == "list" or $type == "map")) {
-        $out = applyFilter($path, $path.nodes[$sel].kids[0], $loc, $root, $track, $out);
+        $w = applyFilter($path, $path.nodes[$sel].kids[0], $loc, $root, $track, $w);
     }
-    return $out;
+    return $w;
 }
 
 /**
  * Apply a filter to an array's elements or an object's members, building
- * a full result entry only for those that pass.
+ * a full result entry only for those that pass. Every tested child counts
+ * as work.
  *
  * @param path {Path} the parsed query
  * @param test {int} the filter's expression
  * @param loc {Loc} the array or object
  * @param root {json.Value} the document
- * @param track {bool} build pointers and normalized paths
- * @param out {list of Loc} the results so far
- * @return {list of Loc} the results with the passing children added
+ * @param track {int} what to build
+ * @param w {Work} the state
+ * @return {Work} the state with the passing children appended
  */
 func applyFilter(
     path as Path,
     test as int,
     loc as Loc,
     root as json.Value,
-    track as bool,
-    out as list of Loc) {
+    track as int,
+    w as Work) {
+    def cost as int init $path.nodes[$test].step;
     if (json.typeOf($loc.value) == "list") {
         def n as int init json.length($loc.value);
+        $w = spend($w, $n * (1 + clamp($cost, 0, $cost)), $path.maxNodes);
         def i as int init 0;
         while ($i < $n) {
-            if (evalLogical($path, $test, $root, json.get($loc.value, "/" + convert.toString($i)))) {
-                $out[] = element($loc, $i, $track);
+            def item as json.Value init json.get($loc.value, "/" + convert.toString($i));
+            if ($cost >= 0) {
+                $w.hit = holds($path, $test, $root, $item, $w);
+            } else {
+                $w = evalLogical($path, $test, $root, $item, $w);
+            }
+            if ($w.hit) {
+                def next as Loc init element($loc, $i, $track);
+                if ($w.n < len($w.out)) {
+                    $w.out[$w.n] = $next;
+                } else {
+                    $w.out[] = $next;
+                }
+                $w.n = $w.n + 1;
             }
             $i = $i + 1;
         }
-        return $out;
+        return $w;
     }
-    for (def key in json.keys($loc.value)) {
-        if (evalLogical($path, $test, $root, json.get($loc.value, "/" + pointerToken($key)))) {
-            $out[] = member($loc, $key, $track);
+    def keys as list of string init json.keys($loc.value);
+    $w = spend($w, len($keys) * (1 + clamp($cost, 0, $cost)), $path.maxNodes);
+    for (def key in $keys) {
+        def token as string init $key;
+        if (strings.contains($key, "~") or strings.contains($key, "/")) {
+            $token = pointerToken($key);
+        }
+        def item as json.Value init json.get($loc.value, "/" + $token);
+        if ($cost >= 0) {
+            $w.hit = holds($path, $test, $root, $item, $w);
+        } else {
+            $w = evalLogical($path, $test, $root, $item, $w);
+        }
+        if ($w.hit) {
+            def next as Loc init member($loc, $key, $token, $item, $track);
+            if ($w.n < len($w.out)) {
+                $w.out[$w.n] = $next;
+            } else {
+                $w.out[] = $next;
+            }
+            $w.n = $w.n + 1;
         }
     }
-    return $out;
+    return $w;
 }
 
 /**
@@ -321,14 +532,17 @@ func applyFilter(
  *
  * @param loc {Loc} the object node
  * @param name {string} the member name
- * @param track {bool} build pointers and normalized paths
+ * @param token {string} the name escaped for a JSON Pointer
+ * @param value {json.Value} the member's value
+ * @param track {int} what to build
  * @return {Loc} the member
  */
-func member(loc as Loc, name as string, track as bool) {
-    def token as string init pointerToken($name);
-    def out as Loc init Loc{value: json.get($loc.value, "/" + $token), ptr: "", norm: ""};
-    if ($track) {
+func member(loc as Loc, name as string, token as string, value as json.Value, track as int) {
+    def out as Loc init Loc{value: $value, ptr: "", norm: ""};
+    if (($track & TRACK_POINTER) != 0) {
         $out.ptr = $loc.ptr + "/" + $token;
+    }
+    if (($track & TRACK_PATH) != 0) {
         $out.norm = $loc.norm + "['" + normalName($name) + "']";
     }
     return $out;
@@ -339,43 +553,70 @@ func member(loc as Loc, name as string, track as bool) {
  *
  * @param loc {Loc} the array node
  * @param i {int} the index, within the array
- * @param track {bool} build pointers and normalized paths
+ * @param track {int} what to build
  * @return {Loc} the element
  */
-func element(loc as Loc, i as int, track as bool) {
+func element(loc as Loc, i as int, track as int) {
     def index as string init convert.toString($i);
     def out as Loc init Loc{value: json.get($loc.value, "/" + $index), ptr: "", norm: ""};
-    if ($track) {
+    if (($track & TRACK_POINTER) != 0) {
         $out.ptr = $loc.ptr + "/" + $index;
+    }
+    if (($track & TRACK_PATH) != 0) {
         $out.norm = $loc.norm + "[" + $index + "]";
     }
     return $out;
 }
 
 /**
- * Add a node's children: an array's elements, an object's member values in
- * document order; nothing for a scalar.
+ * Append a node's children: an array's elements, an object's member values
+ * in document order; nothing for a scalar.
  *
+ * @param path {Path} the parsed query, for its limit
  * @param loc {Loc} the node
- * @param track {bool} build pointers and normalized paths
- * @param out {list of Loc} the results so far
- * @return {list of Loc} the results with the children added
+ * @param track {int} what to build
+ * @param w {Work} the state
+ * @return {Work} the state with the children appended
  */
-func children(loc as Loc, track as bool, out as list of Loc) {
+func children(path as Path, loc as Loc, track as int, w as Work) {
     def type as string init json.typeOf($loc.value);
     if ($type == "list") {
         def n as int init json.length($loc.value);
+        $w = spend($w, $n, $path.maxNodes);
         def i as int init 0;
         while ($i < $n) {
-            $out[] = element($loc, $i, $track);
+            def next as Loc init element($loc, $i, $track);
+            if ($w.n < len($w.out)) {
+                $w.out[$w.n] = $next;
+            } else {
+                $w.out[] = $next;
+            }
+            $w.n = $w.n + 1;
             $i = $i + 1;
         }
     } elseif ($type == "map") {
-        for (def key in json.keys($loc.value)) {
-            $out[] = member($loc, $key, $track);
+        def keys as list of string init json.keys($loc.value);
+        $w = spend($w, len($keys), $path.maxNodes);
+        for (def key in $keys) {
+            def token as string init $key;
+            if (strings.contains($key, "~") or strings.contains($key, "/")) {
+                $token = pointerToken($key);
+            }
+            def next as Loc init member(
+                $loc,
+                $key,
+                $token,
+                json.get($loc.value, "/" + $token),
+                $track);
+            if ($w.n < len($w.out)) {
+                $w.out[$w.n] = $next;
+            } else {
+                $w.out[] = $next;
+            }
+            $w.n = $w.n + 1;
         }
     }
-    return $out;
+    return $w;
 }
 
 /**
@@ -385,23 +626,27 @@ func children(loc as Loc, track as bool, out as list of Loc) {
  * not reach the call depth limit.
  *
  * @param loc {Loc} the node
- * @param track {bool} build pointers and normalized paths
- * @param limit {int} the most nodes to visit
+ * @param track {int} what to build
+ * @param room {int} the most nodes to visit, visited and queued together
+ * @param limit {int} `Path.maxNodes`, for the error
  * @return {list of Loc} the node and its container descendants
+ * @throws {Error} kind `"jsonpath"` past `room`
  */
-func descendants(loc as Loc, track as bool, limit as int) {
+func descendants(loc as Loc, track as int, room as int, limit as int) {
+    if ($room < 1) {
+        overLimit($limit);
+    }
     def out as list of Loc init [];
     def stack as list of Loc init [$loc];
     def top as int init 1;
     while ($top > 0) {
         $top = $top - 1;
-        def cur as Loc init $stack[$top];
-        $out[] = $cur;
-        def kids as list of Loc init containerChildren($cur, $track);
-        def k as int init len($kids) - 1;
-        if (len($out) + $top + len($kids) > $limit) {
-            fail("a descendant segment visited more than " + convert.toString($limit) + " nodes");
+        $out[] = $stack[$top];
+        def kids as list of Loc init containerChildren($out[len($out) - 1], $track);
+        if (len($out) + $top + len($kids) > $room) {
+            overLimit($limit);
         }
+        def k as int init len($kids) - 1;
         while ($k >= 0) {
             if ($top < len($stack)) {
                 $stack[$top] = $kids[$k];
@@ -419,10 +664,10 @@ func descendants(loc as Loc, track as bool, limit as int) {
  * A node's children that are arrays or objects.
  *
  * @param loc {Loc} the node
- * @param track {bool} build pointers and normalized paths
+ * @param track {int} what to build
  * @return {list of Loc} those children, in order
  */
-func containerChildren(loc as Loc, track as bool) {
+func containerChildren(loc as Loc, track as int) {
     def out as list of Loc init [];
     def type as string init json.typeOf($loc.value);
     if ($type == "list") {
@@ -437,9 +682,14 @@ func containerChildren(loc as Loc, track as bool) {
         }
     } elseif ($type == "map") {
         for (def key in json.keys($loc.value)) {
-            def kind as string init json.typeOf($loc.value, "/" + pointerToken($key));
+            def token as string init $key;
+            if (strings.contains($key, "~") or strings.contains($key, "/")) {
+                $token = pointerToken($key);
+            }
+            def child as json.Value init json.get($loc.value, "/" + $token);
+            def kind as string init json.typeOf($child);
             if ($kind == "list" or $kind == "map") {
-                $out[] = member($loc, $key, $track);
+                $out[] = member($loc, $key, $token, $child, $track);
             }
         }
     }
@@ -520,13 +770,177 @@ func clamp(x as int, low as int, high as int) {
  * @param idx {int} the expression node
  * @param root {json.Value} the document
  * @param cur {json.Value} the current node, `@`
- * @return {bool} the result
+ * @param w {Work} the state
+ * @return {Work} the state; `hit` is the result
  */
-func evalLogical(path as Path, idx as int, root as json.Value, cur as json.Value) {
+func evalLogical(path as Path, idx as int, root as json.Value, cur as json.Value, w as Work) {
+    def cost as int init $path.nodes[$idx].step;
+    if ($cost >= 0) {
+        $w = spend($w, $cost, $path.maxNodes);
+        $w.hit = holds($path, $idx, $root, $cur, $w);
+        return $w;
+    }
     def kind as int init $path.nodes[$idx].kind;
     if ($kind == KOR) {
         for (def k in $path.nodes[$idx].kids) {
-            if (evalLogical($path, $k, $root, $cur)) {
+            $w = evalLogical($path, $k, $root, $cur, $w);
+            if ($w.hit) {
+                return $w;
+            }
+        }
+        return $w;
+    }
+    if ($kind == KAND) {
+        for (def k in $path.nodes[$idx].kids) {
+            $w = evalLogical($path, $k, $root, $cur, $w);
+            if (not $w.hit) {
+                return $w;
+            }
+        }
+        return $w;
+    }
+    if ($kind == KNOT) {
+        $w = evalLogical($path, $path.nodes[$idx].kids[0], $root, $cur, $w);
+        $w.hit = not $w.hit;
+        return $w;
+    }
+    if ($kind == KTEST) {
+        $w = evalLogical($path, $path.nodes[$idx].kids[0], $root, $cur, $w);
+        return $w;
+    }
+    if ($kind == KQUERY) {
+        def mark as int init $w.n;
+        $w = selectQuery($path, $idx, $root, $cur, 0, $w);
+        $w.hit = $w.n > $w.from;
+        $w.n = $mark;
+        return $w;
+    }
+    if ($kind == KCMP) {
+        def kids as list of int init $path.nodes[$idx].kids;
+        $w = evalValue($path, $kids[0], $root, $cur, false, $w);
+        $w = evalValue($path, $kids[1], $root, $cur, true, $w);
+        $w.hit = compare($w.val, $w.other, $path.nodes[$idx].text);
+        return $w;
+    }
+    $w.hit = false;
+    if ($kind == KFUNC and $path.nodes[$idx].num == TLOGICAL) {
+        $w = evalMatch($path, $idx, $root, $cur, $w);
+    }
+    return $w;
+}
+
+/**
+ * Evaluate `match` or `search`. A pattern from the document is translated
+ * once per run and kept in `Work.rx`.
+ *
+ * @param path {Path} the parsed query
+ * @param idx {int} the call
+ * @param root {json.Value} the document
+ * @param cur {json.Value} the current node, `@`
+ * @param w {Work} the state
+ * @return {Work} the state; `hit` is the result
+ * @throws {Error} kind `"jsonpath"` when RE2 cannot compile the pattern
+ */
+func evalMatch(path as Path, idx as int, root as json.Value, cur as json.Value, w as Work) {
+    def kids as list of int init $path.nodes[$idx].kids;
+    $w = evalValue($path, $kids[0], $root, $cur, false, $w);
+    def whole as bool init $path.nodes[$idx].text == "match";
+    def compiled as int init $path.nodes[$idx].start;
+    $w.hit = false;
+    if ($compiled == 1) {
+        $w.hit = matchRe2($w.val, json.asString($path.nodes[$idx].lit), $whole);
+        return $w;
+    }
+    if ($compiled == 2) {
+        return $w;
+    }
+    $w = evalValue($path, $kids[1], $root, $cur, true, $w);
+    if (not $w.other.present or json.typeOf($w.other.value) != "string") {
+        return $w;
+    }
+    def text as string init json.asString($w.other.value);
+    if (not maps.has($w.rx, $text)) {
+        $w.rx[$text] = translate($text);
+    }
+    $w.hit = fnMatch($w.val, $w.rx[$text], $whole);
+    return $w;
+}
+
+/**
+ * Evaluate a comparable: a literal, a singular query or a function returning
+ * a value. The result goes to `Work.val`, or `Work.other` for the right side
+ * of a comparison, so `compare` reads both without copying them.
+ *
+ * @param path {Path} the parsed query
+ * @param idx {int} the node
+ * @param root {json.Value} the document
+ * @param cur {json.Value} the current node
+ * @param right {bool} store the result in `other`, not `val`
+ * @param w {Work} the state
+ * @return {Work} the state with the value, or Nothing, stored
+ */
+func evalValue(
+    path as Path,
+    idx as int,
+    root as json.Value,
+    cur as json.Value,
+    right as bool,
+    w as Work) {
+    def cost as int init $path.nodes[$idx].step;
+    if ($cost >= 0) {
+        $w = spend($w, $cost, $path.maxNodes);
+        if ($right) {
+            $w.other = simpleValue($path, $idx, $root, $cur, $w);
+        } else {
+            $w.val = simpleValue($path, $idx, $root, $cur, $w);
+        }
+        return $w;
+    }
+    # Not simple: `length` of such an argument, or `count` / `value` of an
+    # `@` query.
+    def arg as int init $path.nodes[$idx].kids[0];
+    if ($path.nodes[$idx].text == "length") {
+        $w = evalValue($path, $arg, $root, $cur, $right, $w);
+        if ($right) {
+            $w.other = fnLength($w.other);
+        } else {
+            $w.val = fnLength($w.val);
+        }
+        return $w;
+    }
+    def mark as int init $w.n;
+    $w = selectQuery($path, $arg, $root, $cur, 0, $w);
+    def v as Val init nothing();
+    if ($path.nodes[$idx].text == "count") {
+        $v = Val{present: true, value: jsonInt($w.n - $w.from)};
+    } elseif ($w.n - $w.from == 1) {
+        $v = Val{present: true, value: $w.out[$w.from].value};
+    }
+    $w.n = $mark;
+    if ($right) {
+        $w.other = $v;
+    } else {
+        $w.val = $v;
+    }
+    return $w;
+}
+
+/**
+ * Evaluate a simple logical expression (`staticCost` >= 0). Its work was
+ * counted by the caller.
+ *
+ * @param path {Path} the parsed query
+ * @param idx {int} the expression node
+ * @param root {json.Value} the document
+ * @param cur {json.Value} the current node, `@`
+ * @param w {Work} the state, read only: the `$` query results
+ * @return {bool} the result
+ */
+func holds(path as Path, idx as int, root as json.Value, cur as json.Value, w as Work) {
+    def kind as int init $path.nodes[$idx].kind;
+    if ($kind == KOR) {
+        for (def k in $path.nodes[$idx].kids) {
+            if (holds($path, $k, $root, $cur, $w)) {
                 return true;
             }
         }
@@ -534,98 +948,71 @@ func evalLogical(path as Path, idx as int, root as json.Value, cur as json.Value
     }
     if ($kind == KAND) {
         for (def k in $path.nodes[$idx].kids) {
-            if (not evalLogical($path, $k, $root, $cur)) {
+            if (not holds($path, $k, $root, $cur, $w)) {
                 return false;
             }
         }
         return true;
     }
     if ($kind == KNOT) {
-        return not evalLogical($path, $path.nodes[$idx].kids[0], $root, $cur);
+        return not holds($path, $path.nodes[$idx].kids[0], $root, $cur, $w);
     }
     if ($kind == KTEST) {
-        return evalLogical($path, $path.nodes[$idx].kids[0], $root, $cur);
+        return holds($path, $path.nodes[$idx].kids[0], $root, $cur, $w);
     }
-    if ($kind == KQUERY and $path.nodes[$idx].num == 1) {
-        return singularValue($path, $idx, $root, $cur).present;
+    if ($kind == KQUERY and $path.nodes[$idx].text == "$") {
+        return $w.count[$idx] > 0;
     }
     if ($kind == KQUERY) {
-        return len(selectQuery($path, $idx, $root, $cur, false)) > 0;
-    }
-    if ($kind == KCACHED) {
-        return $path.nodes[$idx].num > 0;
+        return singularValue($path, $idx, $root, $cur).present;
     }
     if ($kind == KCMP) {
         def kids as list of int init $path.nodes[$idx].kids;
-        def a as Val init evalValue($path, $kids[0], $root, $cur);
-        def b as Val init evalValue($path, $kids[1], $root, $cur);
-        return compare($a, $b, $path.nodes[$idx].text);
+        return compare(
+            simpleValue($path, $kids[0], $root, $cur, $w),
+            simpleValue($path, $kids[1], $root, $cur, $w),
+            $path.nodes[$idx].text);
     }
-    if ($kind == KFUNC and $path.nodes[$idx].num == TLOGICAL) {
-        def kids as list of int init $path.nodes[$idx].kids;
-        def subject as Val init evalValue($path, $kids[0], $root, $cur);
-        def whole as bool init $path.nodes[$idx].text == "match";
-        def compiled as int init $path.nodes[$idx].start;
-        if ($compiled == 1) {
-            return matchRe2($subject, json.asString($path.nodes[$idx].lit), $whole);
-        }
-        if ($compiled == 2) {
-            return false;
-        }
-        return fnMatch($subject, evalValue($path, $kids[1], $root, $cur), $whole);
+    if ($kind == KFUNC and $path.nodes[$idx].start == 1) {
+        return matchRe2(
+            simpleValue($path, $path.nodes[$idx].kids[0], $root, $cur, $w),
+            json.asString($path.nodes[$idx].lit),
+            $path.nodes[$idx].text == "match");
     }
     return false;
 }
 
 /**
- * Evaluate a comparable: a literal, a singular query or a function returning
- * a value.
+ * Evaluate a simple comparable (`staticCost` >= 0). Its work was counted by
+ * the caller.
  *
  * @param path {Path} the parsed query
  * @param idx {int} the node
  * @param root {json.Value} the document
  * @param cur {json.Value} the current node
+ * @param w {Work} the state, read only: the `$` query results
  * @return {Val} the value, or Nothing
  */
-func evalValue(path as Path, idx as int, root as json.Value, cur as json.Value) {
+func simpleValue(path as Path, idx as int, root as json.Value, cur as json.Value, w as Work) {
     def kind as int init $path.nodes[$idx].kind;
     if ($kind == KLITERAL) {
         return Val{present: true, value: $path.nodes[$idx].lit};
     }
-    if ($kind == KQUERY) {
+    if ($kind == KQUERY and $path.nodes[$idx].text != "$") {
         return singularValue($path, $idx, $root, $cur);
     }
-    if ($kind == KCACHED) {
-        if ($path.nodes[$idx].num == 1) {
-            return Val{present: true, value: $path.nodes[$idx].lit};
-        }
-        return nothing();
+    if ($kind == KFUNC and $path.nodes[$idx].text == "length") {
+        return fnLength(simpleValue($path, $path.nodes[$idx].kids[0], $root, $cur, $w));
     }
-    if ($kind != KFUNC) {
-        return nothing();
+    def q as int init $idx;
+    if ($kind == KFUNC) {
+        $q = $path.nodes[$idx].kids[0];
     }
-    def name as string init $path.nodes[$idx].text;
-    def arg as int init $path.nodes[$idx].kids[0];
-    if ($name == "length") {
-        return fnLength(evalValue($path, $arg, $root, $cur));
+    if ($kind == KFUNC and $path.nodes[$idx].text == "count") {
+        return Val{present: true, value: jsonInt($w.count[$q])};
     }
-    def count as int init 0;
-    def first as json.Value init json.decode("null");
-    if ($path.nodes[$arg].kind == KCACHED) {
-        $count = $path.nodes[$arg].num;
-        $first = $path.nodes[$arg].lit;
-    } elseif ($path.nodes[$arg].kind == KQUERY) {
-        def nodes as list of Loc init selectQuery($path, $arg, $root, $cur, false);
-        $count = len($nodes);
-        if ($count > 0) {
-            $first = $nodes[0].value;
-        }
-    }
-    if ($name == "count") {
-        return Val{present: true, value: jsonInt($count)};
-    }
-    if ($count == 1) {
-        return Val{present: true, value: $first};
+    if ($w.count[$q] == 1) {
+        return Val{present: true, value: $w.first[$q]};
     }
     return nothing();
 }

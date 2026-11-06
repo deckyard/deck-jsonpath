@@ -18,14 +18,19 @@ def struct Val {
 };
 
 /**
- * A translated regular expression.
+ * A translated regular expression, or part of one.
  *
  * @field ok {bool} whether the pattern was valid I-Regexp
  * @field re {string} the RE2 pattern
+ * @field next {int} for a part: the position after it in the pattern
+ * @field lit {string} for a class item: the character it stands for; ""
+ *   for a category
  */
 def struct Rx {
     ok as bool,
-    re as string
+    re as string,
+    next as int,
+    lit as string
 };
 
 /**
@@ -77,22 +82,16 @@ func fnLength(v as Val) {
 }
 
 /**
- * `match()` and `search()`: whether a string matches an I-Regexp, as a whole
- * or anywhere. A non-string or an invalid pattern gives false.
+ * `match()` and `search()`: whether a string matches a translated I-Regexp,
+ * as a whole or anywhere. A non-string or an invalid pattern gives false.
  *
  * @param subject {Val} the string
- * @param pattern {Val} the I-Regexp
+ * @param rx {Rx} the pattern, from `translate`
  * @param whole {bool} true for `match`, false for `search`
  * @return {bool} the result
+ * @throws {Error} kind `"jsonpath"` when RE2 cannot compile the pattern
  */
-func fnMatch(subject as Val, pattern as Val, whole as bool) {
-    if (not $subject.present or not $pattern.present) {
-        return false;
-    }
-    if (json.typeOf($subject.value) != "string" or json.typeOf($pattern.value) != "string") {
-        return false;
-    }
-    def rx as Rx init translate(json.asString($pattern.value));
+func fnMatch(subject as Val, rx as Rx, whole as bool) {
     if (not $rx.ok) {
         return false;
     }
@@ -106,6 +105,8 @@ func fnMatch(subject as Val, pattern as Val, whole as bool) {
  * @param re {string} the RE2 pattern
  * @param whole {bool} match the whole string
  * @return {bool} the result; false for a non-string
+ * @throws {Error} kind `"jsonpath"` when RE2 cannot compile the pattern: a
+ *   valid I-Regexp can repeat more than RE2's 1000, or exceed its size limits
  */
 func matchRe2(subject as Val, re as string, whole as bool) {
     if (not $subject.present or json.typeOf($subject.value) != "string") {
@@ -117,20 +118,20 @@ func matchRe2(subject as Val, re as string, whole as bool) {
     try {
         return regex.matches($re, json.asString($subject.value));
     } catch (e) {
-        return false;
+        fail("RE2 cannot run a valid I-Regexp: " + $e.message);
     }
 }
 
 /**
- * Translate an I-Regexp into RE2. `.` becomes `[^\n\r]`, and anything
- * outside RFC 9485's grammar is refused. `^` and `$` stay anchors, as the
- * compliance suite expects.
+ * Translate an I-Regexp into RE2, in one pass. `.` becomes `[^\n\r]`, and
+ * anything outside RFC 9485's grammar is refused. `^` and `$` stay anchors,
+ * as the compliance suite expects.
  *
  * @param pattern {string} the I-Regexp
  * @return {Rx} the RE2 pattern, or not `ok`
  */
 func translate(pattern as string) {
-    def bad as Rx init Rx{ok: false, re: ""};
+    def bad as Rx init Rx{ok: false, re: "", next: 0, lit: ""};
     def chars as list of string init strings.chars($pattern);
     def n as int init len($chars);
     def out as list of string init [];
@@ -176,9 +177,8 @@ func translate(pattern as string) {
             if (not $cls.ok) {
                 return $bad;
             }
-            def text as string init $cls.re;
-            $out[] = $text;
-            $i = $i + classLength($chars, $i);
+            $out[] = $cls.re;
+            $i = $cls.next;
             $canQuantify = true;
         } elseif ($c == "\\") {
             def esc as Rx init escape($chars, $i);
@@ -186,7 +186,7 @@ func translate(pattern as string) {
                 return $bad;
             }
             $out[] = $esc.re;
-            $i = $i + escapeLength($chars, $i);
+            $i = $esc.next;
             $canQuantify = true;
         } elseif ($c == "]" or $c == RBRACE) {
             return $bad;
@@ -198,11 +198,12 @@ func translate(pattern as string) {
     if ($depth != 0) {
         return $bad;
     }
-    return Rx{ok: true, re: strings.join($out, "")};
+    return Rx{ok: true, re: strings.join($out, ""), next: $n, lit: ""};
 }
 
 /**
- * The end of a range quantifier `{n}`, `{n,}` or `{n,m}`.
+ * The end of a range quantifier `{n}`, `{n,}` or `{n,m}`; `{n,m}` needs
+ * `n <= m`.
  *
  * @param chars {list of string} the pattern
  * @param from {int} the position after `{`
@@ -210,24 +211,44 @@ func translate(pattern as string) {
  */
 func rangeEnd(chars as list of string, from as int) {
     def i as int init $from;
-    def digits as int init 0;
     while ($i < len($chars) and isDigit($chars[$i])) {
         $i = $i + 1;
-        $digits = $digits + 1;
     }
-    if ($digits == 0 or $i >= len($chars)) {
+    def low as string init strings.join(lists.slice($chars, $from, $i), "");
+    if ($low == "" or $i >= len($chars)) {
         return -1;
     }
     if ($chars[$i] == ",") {
         $i = $i + 1;
+        def first as int init $i;
         while ($i < len($chars) and isDigit($chars[$i])) {
             $i = $i + 1;
+        }
+        def high as string init strings.join(lists.slice($chars, $first, $i), "");
+        if ($high != "" and digitsBefore($high, $low)) {
+            return -1;
         }
     }
     if ($i >= len($chars) or $chars[$i] != RBRACE) {
         return -1;
     }
     return $i;
+}
+
+/**
+ * Whether one decimal number is less than another, at any length.
+ *
+ * @param a {string} digits
+ * @param b {string} digits
+ * @return {bool} true when `a < b`
+ */
+func digitsBefore(a as string, b as string) {
+    $a = regex.replace("^0+", $a, "");
+    $b = regex.replace("^0+", $b, "");
+    if (len($a) != len($b)) {
+        return len($a) < len($b);
+    }
+    return $a < $b;
 }
 
 /**
@@ -248,70 +269,71 @@ func singleEscape(c as string) {
 
 /**
  * Translate an escape: a single-character escape or a category `\p{..}` /
- * `\P{..}`.
+ * `\P{..}`. A category name is one or two letters, so the scan for `}` is
+ * bounded.
  *
  * @param chars {list of string} the pattern
  * @param from {int} the position after the backslash
- * @return {Rx} the RE2 text, or not `ok`
+ * @return {Rx} the RE2 text and the position after the escape, or not `ok`
  */
 func escape(chars as list of string, from as int) {
-    def bad as Rx init Rx{ok: false, re: ""};
+    def bad as Rx init Rx{ok: false, re: "", next: 0, lit: ""};
     if ($from >= len($chars)) {
         return $bad;
     }
     def c as string init $chars[$from];
     def single as string init singleEscape($c);
     if ($single != "") {
-        return Rx{ok: true, re: $single};
+        return Rx{ok: true, re: $single, next: $from + 1, lit: ""};
     }
     if ($c != "p" and $c != "P") {
         return $bad;
     }
-    def close as int init lists.indexOf(lists.slice($chars, $from), RBRACE);
-    if ($from + 1 >= len($chars) or $chars[$from + 1] != LBRACE or $close < 0) {
+    if ($from + 1 >= len($chars) or $chars[$from + 1] != LBRACE) {
         return $bad;
     }
-    def name as string init strings.join(lists.slice($chars, $from + 2, $from + $close), "");
+    def close as int init $from + 2;
+    while ($close < len($chars) and $close < $from + 5 and $chars[$close] != RBRACE) {
+        $close = $close + 1;
+    }
+    if ($close >= len($chars) or $chars[$close] != RBRACE) {
+        return $bad;
+    }
+    def name as string init strings.join(lists.slice($chars, $from + 2, $close), "");
     if (not regex.matches(
         "^(L[lmotu]?|M[cen]?|N[dlo]?|P[cdefios]?|Z[lps]?|S[ckmo]?|C[cfno]?)$",
         $name)) {
         return $bad;
     }
-    return Rx{ok: true, re: "\\" + $c + LBRACE + $name + RBRACE};
+    return Rx{ok: true, re: "\\" + $c + LBRACE + $name + RBRACE, next: $close + 1, lit: ""};
 }
 
 /**
- * How many code points an escape takes after the backslash.
- *
- * @param chars {list of string} the pattern
- * @param from {int} the position after the backslash
- * @return {int} its length
- */
-func escapeLength(chars as list of string, from as int) {
-    if ($chars[$from] == "p" or $chars[$from] == "P") {
-        return lists.indexOf(lists.slice($chars, $from), RBRACE) + 1;
-    }
-    return 1;
-}
-
-/**
- * Translate a character class `[...]`.
+ * Translate a character class `[...]` (RFC 9485 `charClassExpr`): `-` is a
+ * literal only first or last, and otherwise joins two single characters
+ * into a range, never after a range or a category.
  *
  * @param chars {list of string} the pattern
  * @param from {int} the position after `[`
- * @return {Rx} the RE2 class, or not `ok`
+ * @return {Rx} the RE2 class and the position after `]`, or not `ok`
  */
 func charClass(chars as list of string, from as int) {
-    def bad as Rx init Rx{ok: false, re: ""};
+    def bad as Rx init Rx{ok: false, re: "", next: 0, lit: ""};
+    def n as int init len($chars);
     def out as list of string init ["["];
     def i as int init $from;
-    if ($i < len($chars) and $chars[$i] == "^") {
+    if ($i < $n and $chars[$i] == "^") {
         $out[] = "^";
         $i = $i + 1;
     }
     def items as int init 0;
+    if ($i < $n and $chars[$i] == "-") {
+        $out[] = "\\-";
+        $i = $i + 1;
+        $items = 1;
+    }
     while (true) {
-        if ($i >= len($chars)) {
+        if ($i >= $n) {
             return $bad;
         }
         def c as string init $chars[$i];
@@ -321,49 +343,69 @@ func charClass(chars as list of string, from as int) {
             }
             break;
         }
-        if ($c == "[") {
+        if ($c == "-") {
+            if ($i + 1 < $n and $chars[$i + 1] == "]") {
+                $out[] = "\\-";
+                $i = $i + 1;
+                $items = $items + 1;
+                continue;
+            }
             return $bad;
         }
-        if ($c == "\\") {
-            def esc as Rx init escape($chars, $i + 1);
-            if (not $esc.ok) {
+        def low as Rx init classItem($chars, $i);
+        if (not $low.ok) {
+            return $bad;
+        }
+        $i = $low.next;
+        if ($low.lit != "" and $i + 1 < $n and $chars[$i] == "-" and $chars[$i + 1] != "]") {
+            def high as Rx init classItem($chars, $i + 1);
+            if (not $high.ok or $high.lit == "" or
+                convert.toCodepoint($high.lit) < convert.toCodepoint($low.lit)) {
                 return $bad;
             }
-            $out[] = $esc.re;
-            $i = $i + 1 + escapeLength($chars, $i + 1);
-        } elseif ($c == "-") {
-            def edge as bool init $items == 0 or ($i + 1 < len($chars) and $chars[$i + 1] == "]");
-            if ($edge) {
-                $out[] = "\\-";
-            } else {
-                $out[] = "-";
-            }
-            $i = $i + 1;
+            $out[] = $low.re + "-" + $high.re;
+            $i = $high.next;
         } else {
-            $out[] = $c;
-            $i = $i + 1;
+            $out[] = $low.re;
         }
         $items = $items + 1;
     }
     $out[] = "]";
-    return Rx{ok: true, re: strings.join($out, "")};
+    return Rx{ok: true, re: strings.join($out, ""), next: $i + 1, lit: ""};
 }
 
 /**
- * How many code points a character class takes after `[`, its `]` included.
+ * One item of a character class: a character, a single-character escape
+ * or a category.
  *
  * @param chars {list of string} the pattern
- * @param from {int} the position after `[`
- * @return {int} its length
+ * @param from {int} the item's position
+ * @return {Rx} the RE2 text, the position after it and the character it
+ *   stands for (`lit` "" for a category); not `ok` for `[`, `]`, `-` or a
+ *   bad escape
  */
-func classLength(chars as list of string, from as int) {
-    def i as int init $from;
-    while ($i < len($chars) and $chars[$i] != "]") {
-        if ($chars[$i] == "\\") {
-            $i = $i + 1 + escapeLength($chars, $i + 1);
-        } else {
-            $i = $i + 1;
+func classItem(chars as list of string, from as int) {
+    def c as string init $chars[$from];
+    if ($c == "[" or $c == "]" or $c == "-") {
+        return Rx{ok: false, re: "", next: 0, lit: ""};
+    }
+    if ($c != "\\") {
+        return Rx{ok: true, re: $c, next: $from + 1, lit: $c};
+    }
+    def esc as Rx init escape($chars, $from + 1);
+    if (not $esc.ok) {
+        return $esc;
+    }
+    def e as string init $chars[$from + 1];
+    if ($e != "p" and $e != "P") {
+        $esc.lit = $e;
+        if ($e == "n") {
+            $esc.lit = "\n";
+        } elseif ($e == "r") {
+            $esc.lit = "\r";
+        } elseif ($e == "t") {
+            $esc.lit = "\t";
         }
     }
-    return $i - $from + 1;
+    return $esc;
 }

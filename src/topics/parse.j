@@ -51,7 +51,74 @@ func parse(source as string) {
     if ($p.pos < len($p.chars)) {
         failAt($p, "unexpected " + describeChar(peek($p)));
     }
+    # The root query's `start` is 1 when a filter holds a `$` query.
+    def i as int init 0;
+    while ($i < len($p.nodes)) {
+        def kind as int init $p.nodes[$i].kind;
+        if ($kind == KQUERY and $p.nodes[$i].text == "$" and $i != $p.last) {
+            $p.nodes[$p.last].start = 1;
+        }
+        if ($kind != KSEGMENT and $kind != KSLICE and $kind != KNAME and $kind != KWILD and
+            $kind != KINDEX and $kind != KFILTER) {
+            $p.nodes[$i].step = staticCost($p.nodes, $i);
+        }
+        $i = $i + 1;
+    }
     return Path{source: $source, nodes: $p.nodes, root: $p.last, maxNodes: MAX_NODES};
+}
+
+/**
+ * The static work of an expression node that needs no node lists: built
+ * from literals, singular queries, `$` queries (run once by `run`),
+ * comparisons, logic, `length`, `count` / `value` of a `$` query, and
+ * `match` / `search` with a literal pattern. The evaluator runs such an
+ * expression through `holds` / `simpleValue`, without passing `Work` in
+ * place. Kids have lower indexes, so their cost is already in their `step`.
+ *
+ * @param nodes {list of Node} the nodes
+ * @param i {int} the node
+ * @return {int} the singular query steps it may take; -1 when not simple
+ */
+func staticCost(nodes as list of Node, i as int) {
+    def kind as int init $nodes[$i].kind;
+    def kids as list of int init $nodes[$i].kids;
+    if ($kind == KLITERAL) {
+        return 0;
+    }
+    if ($kind == KQUERY) {
+        if ($nodes[$i].text == "$") {
+            return 0;
+        }
+        if ($nodes[$i].num == 1) {
+            return len($kids);
+        }
+        return -1;
+    }
+    def name as string init $nodes[$i].text;
+    if ($kind == KFUNC and ($name == "count" or $name == "value")) {
+        if ($nodes[$kids[0]].kind == KQUERY and $nodes[$kids[0]].text == "$") {
+            return 0;
+        }
+        return -1;
+    }
+    if ($kind == KFUNC and $name != "length" and $nodes[$i].start == 0) {
+        return -1;
+    }
+    if ($kind == KFUNC and $name != "length") {
+        return $nodes[$kids[0]].step;
+    }
+    if ($kind != KFUNC and $kind != KCMP and $kind != KOR and $kind != KAND and
+        $kind != KNOT and $kind != KTEST) {
+        return -1;
+    }
+    def sum as int init 0;
+    for (def k in $kids) {
+        if ($nodes[$k].step < 0) {
+            return -1;
+        }
+        $sum = $sum + $nodes[$k].step;
+    }
+    return $sum;
 }
 
 /**
@@ -62,7 +129,39 @@ func parse(source as string) {
  * @throws {Error} always, with `kind` `"jsonpath"`
  */
 func failAt(p as Parser, message as string) {
-    fail($message + " at position " + convert.toString($p.pos) + " of " + quoted($p.source));
+    fail($message + " at position " + convert.toString($p.pos) + " of " + excerpt($p));
+}
+
+/**
+ * The query for an error message: whole when it is short, else the
+ * `EXCERPT` code points around the error position, with `...` for the cut.
+ * The query may be untrusted and long; the message stays bounded.
+ *
+ * @param p {Parser} the parser
+ * @return {string} the quoted query or excerpt
+ */
+func excerpt(p as Parser) {
+    def n as int init len($p.chars);
+    if ($n <= EXCERPT) {
+        return quoted($p.source);
+    }
+    def start as int init $p.pos - EXCERPT // 2;
+    if ($start > $n - EXCERPT) {
+        $start = $n - EXCERPT;
+    }
+    if ($start < 0) {
+        $start = 0;
+    }
+    def text as string init quoted(strings.join(
+        lists.slice($p.chars, $start, $start + EXCERPT),
+        ""));
+    if ($start > 0) {
+        $text = "..." + $text;
+    }
+    if ($start + EXCERPT < $n) {
+        $text = $text + "...";
+    }
+    return $text;
 }
 
 /**
@@ -223,7 +322,8 @@ func parseQuery(p as Parser) {
     if ($singular) {
         $q.num = 1;
     }
-    return emit($p, $q);
+    $p = emit($p, $q);
+    return $p;
 }
 
 /**
@@ -253,7 +353,8 @@ func isSingularSegment(nodes as list of Node, seg as int) {
 func parseDotted(p as Parser, descendant as int) {
     def ch as string init peek($p);
     if ($ch == "[" and $descendant == 1) {
-        return parseBracket($p, 1);
+        $p = parseBracket($p, 1);
+        return $p;
     }
     def sel as Node init newNode(KWILD);
     if ($ch == "*") {
@@ -272,7 +373,8 @@ func parseDotted(p as Parser, descendant as int) {
     def seg as Node init newNode(KSEGMENT);
     $seg.num = $descendant;
     $seg.kids = [$p.last];
-    return emit($p, $seg);
+    $p = emit($p, $seg);
+    return $p;
 }
 
 /**
@@ -301,7 +403,8 @@ func parseBracket(p as Parser, descendant as int) {
             failAt($p, "expected , or ] in a selection, found " + describeChar($ch));
         }
     }
-    return emit($p, $seg);
+    $p = emit($p, $seg);
+    return $p;
 }
 
 /**
@@ -316,11 +419,13 @@ func parseSelector(p as Parser) {
         $p = parseString($p);
         def name as Node init newNode(KNAME);
         $name.text = json.asString($p.nodes[$p.last].lit);
-        return emit($p, $name);
+        $p = emit($p, $name);
+        return $p;
     }
     if ($ch == "*") {
         $p.pos = $p.pos + 1;
-        return emit($p, newNode(KWILD));
+        $p = emit($p, newNode(KWILD));
+        return $p;
     }
     if ($ch == "?") {
         $p.pos = $p.pos + 1;
@@ -330,7 +435,8 @@ func parseSelector(p as Parser) {
         $p.depth = $p.depth - 1;
         def filter as Node init newNode(KFILTER);
         $filter.kids = [$p.last];
-        return emit($p, $filter);
+        $p = emit($p, $filter);
+        return $p;
     }
     def sel as Node init newNode(KINDEX);
     if ($ch == "-" or isDigit($ch)) {
@@ -346,7 +452,8 @@ func parseSelector(p as Parser) {
             failAt($p, "expected a selector, found " + describeChar($ch));
         }
         $sel.num = $sel.start;
-        return emit($p, $sel);
+        $p = emit($p, $sel);
+        return $p;
     }
     $sel.kind = KSLICE;
     $sel.step = 1;
@@ -366,7 +473,8 @@ func parseSelector(p as Parser) {
             $sel.step = $p.num;
         }
     }
-    return emit($p, $sel);
+    $p = emit($p, $sel);
+    return $p;
 }
 
 /**
@@ -440,7 +548,8 @@ func parseString(p as Parser) {
     }
     def lit as Node init newNode(KLITERAL);
     $lit.lit = jsonString(strings.join($out, ""));
-    return emit($p, $lit);
+    $p = emit($p, $lit);
+    return $p;
 }
 
 /**
@@ -542,8 +651,9 @@ func parseOr(p as Parser, allowLiteral as bool) {
         $p.last = $n.kids[0];
         return $p;
     }
-    $p = checkOperands($p, $n.kids);
-    return emit($p, $n);
+    checkOperands($p, $n.kids);
+    $p = emit($p, $n);
+    return $p;
 }
 
 /**
@@ -573,8 +683,9 @@ func parseAnd(p as Parser, allowLiteral as bool) {
         $p.last = $n.kids[0];
         return $p;
     }
-    $p = checkOperands($p, $n.kids);
-    return emit($p, $n);
+    checkOperands($p, $n.kids);
+    $p = emit($p, $n);
+    return $p;
 }
 
 /**
@@ -583,13 +694,12 @@ func parseAnd(p as Parser, allowLiteral as bool) {
  *
  * @param p {Parser} the parser
  * @param kids {list of int} the operands
- * @return {Parser} the parser, unchanged
+ * @throws {Error} kind `"jsonpath"` for an operand that is no test
  */
 func checkOperands(p as Parser, kids as list of int) {
     for (def k in $kids) {
-        $p = checkTest($p, $k);
+        checkTest($p, $k);
     }
-    return $p;
 }
 
 /**
@@ -609,14 +719,16 @@ func parseBasic(p as Parser, allowLiteral as bool) {
             $p = parseParen($p);
         } else {
             $p = parsePrimary($p);
-            $p = checkTest($p, $p.last);
+            checkTest($p, $p.last);
         }
         def neg as Node init newNode(KNOT);
         $neg.kids = [$p.last];
-        return emit($p, $neg);
+        $p = emit($p, $neg);
+        return $p;
     }
     if ($ch == "(") {
-        return parseParen($p);
+        $p = parseParen($p);
+        return $p;
     }
     $p = parsePrimary($p);
     def left as int init $p.last;
@@ -633,21 +745,22 @@ func parseBasic(p as Parser, allowLiteral as bool) {
             return $p;
         }
         if (not $allowLiteral) {
-            $p = checkTest($p, $left);
+            checkTest($p, $left);
         }
         $p.last = $left;
         return $p;
     }
     $p.pos = $p.pos + len($op);
     $p = skipS($p);
-    $p = checkComparable($p, $left);
+    checkComparable($p, $left);
     $p = parsePrimary($p);
     def right as int init $p.last;
-    $p = checkComparable($p, $right);
+    checkComparable($p, $right);
     def cmp as Node init newNode(KCMP);
     $cmp.text = $op;
     $cmp.kids = [$left, $right];
-    return emit($p, $cmp);
+    $p = emit($p, $cmp);
+    return $p;
 }
 
 /**
@@ -673,7 +786,8 @@ func parseParen(p as Parser) {
     }
     def test as Node init newNode(KTEST);
     $test.kids = [$p.last];
-    return emit($p, $test);
+    $p = emit($p, $test);
+    return $p;
 }
 
 /**
@@ -702,13 +816,16 @@ func comparisonOp(p as Parser) {
 func parsePrimary(p as Parser) {
     def ch as string init peek($p);
     if ($ch == "$" or $ch == "@") {
-        return parseQuery($p);
+        $p = parseQuery($p);
+        return $p;
     }
     if ($ch == "'" or $ch == "\"") {
-        return parseString($p);
+        $p = parseString($p);
+        return $p;
     }
     if ($ch == "-" or isDigit($ch)) {
-        return parseNumber($p);
+        $p = parseNumber($p);
+        return $p;
     }
     if ($ch >= "a" and $ch <= "z") {
         def start as int init $p.pos;
@@ -718,7 +835,8 @@ func parsePrimary(p as Parser) {
         }
         def word as string init strings.join(lists.slice($p.chars, $start, $p.pos), "");
         if (peek($p) == "(") {
-            return parseFunction($p, $word);
+            $p = parseFunction($p, $word);
+            return $p;
         }
         def literals as map of string to string init {
             "true": "true",
@@ -728,10 +846,11 @@ func parsePrimary(p as Parser) {
         if (maps.has($literals, $word)) {
             def lit as Node init newNode(KLITERAL);
             $lit.lit = json.decode($word);
-            return emit($p, $lit);
+            $p = emit($p, $lit);
+            return $p;
         }
         $p.pos = $start;
-        failAt($p, "unknown word " + quoted($word));
+        failAt($p, "unknown word " + quoted(cut($word)));
     }
     failAt($p, "expected a query, a literal or a function, found " + describeChar($ch));
 }
@@ -751,16 +870,17 @@ func parseNumber(p as Parser) {
     def text as string init strings.join(lists.slice($p.chars, $start, $p.pos), "");
     if (not regex.matches("^-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][-+]?[0-9]+)?$", $text)) {
         $p.pos = $start;
-        failAt($p, "malformed number " + quoted($text));
+        failAt($p, "malformed number " + quoted(cut($text)));
     }
     def lit as Node init newNode(KLITERAL);
     try {
         $lit.lit = json.decode($text);
     } catch (e) {
         $p.pos = $start;
-        failAt($p, "number out of range " + quoted($text));
+        failAt($p, "number out of range " + quoted(cut($text)));
     }
-    return emit($p, $lit);
+    $p = emit($p, $lit);
+    return $p;
 }
 
 /**
@@ -773,7 +893,7 @@ func parseNumber(p as Parser) {
 func parseFunction(p as Parser, name as string) {
     def sig as list of int init signature($name);
     if (len($sig) == 0) {
-        failAt($p, "unknown function " + $name + "()");
+        failAt($p, "unknown function " + cut($name) + "()");
     }
     $p.pos = $p.pos + 1;
     $p = enter($p);
@@ -801,7 +921,7 @@ func parseFunction(p as Parser, name as string) {
         }
     }
     $p.depth = $p.depth - 1;
-    $call = precompile($p.nodes, $call);
+    $call = precompile($p, $call);
     if (len($call.kids) != len($sig) - 1) {
         failAt($p, $name + "() takes " + convert.toString(len($sig) - 1) + " argument(s)");
     }
@@ -814,7 +934,8 @@ func parseFunction(p as Parser, name as string) {
         }
         $i = $i + 1;
     }
-    return emit($p, $call);
+    $p = emit($p, $call);
+    return $p;
 }
 
 /**
@@ -845,7 +966,7 @@ func fitsParameter(nodes as list of Node, arg as int, type as int) {
  *
  * @param p {Parser} the parser
  * @param idx {int} the node standing as a test
- * @return {Parser} the parser, unchanged
+ * @throws {Error} kind `"jsonpath"` for a literal or a value function
  */
 func checkTest(p as Parser, idx as int) {
     def n as Node init $p.nodes[$idx];
@@ -855,7 +976,6 @@ func checkTest(p as Parser, idx as int) {
     if ($n.kind == KFUNC and $n.num == TVALUE) {
         failAt($p, $n.text + "() returns a value; compare it");
     }
-    return $p;
 }
 
 /**
@@ -864,7 +984,7 @@ func checkTest(p as Parser, idx as int) {
  *
  * @param p {Parser} the parser
  * @param idx {int} the operand
- * @return {Parser} the parser, unchanged
+ * @throws {Error} kind `"jsonpath"` when the operand is not comparable
  */
 func checkComparable(p as Parser, idx as int) {
     def n as Node init $p.nodes[$idx];
@@ -874,7 +994,6 @@ func checkComparable(p as Parser, idx as int) {
     if ($n.kind == KFUNC and $n.num != TVALUE) {
         failAt($p, $n.text + "() returns no value to compare");
     }
-    return $p;
 }
 
 /**
@@ -895,26 +1014,39 @@ func enter(p as Parser) {
 
 /**
  * Translate the pattern of `match` or `search` once when it is a string
- * literal, instead of for every node the filter tests.
+ * literal, instead of for every node the filter tests, and refuse it when
+ * RE2 cannot compile it.
  *
- * @param nodes {list of Node} the nodes
+ * @param p {Parser} the parser
  * @param call {Node} the call
  * @return {Node} the call, with `start` and `lit` set for a literal pattern
+ * @throws {Error} kind `"jsonpath"` when the pattern is valid I-Regexp that
+ *   RE2 cannot compile (a repeat over 1000, a program over RE2's size limits)
  */
-func precompile(nodes as list of Node, call as Node) {
+func precompile(p as Parser, call as Node) {
     if (($call.text != "match" and $call.text != "search") or len($call.kids) != 2) {
         return $call;
     }
-    def arg as Node init $nodes[$call.kids[1]];
+    def arg as Node init $p.nodes[$call.kids[1]];
     if ($arg.kind != KLITERAL or json.typeOf($arg.lit) != "string") {
         return $call;
     }
     def rx as Rx init translate(json.asString($arg.lit));
     $call.start = 2;
-    if ($rx.ok) {
-        $call.start = 1;
-        $call.lit = jsonString($rx.re);
+    if (not $rx.ok) {
+        return $call;
     }
+    def why as string init "";
+    try {
+        regex.matches("^(?:" + $rx.re + ")$", "");
+    } catch (e) {
+        $why = $e.message;
+    }
+    if ($why != "") {
+        failAt($p, "RE2 cannot run a valid I-Regexp: " + $why);
+    }
+    $call.start = 1;
+    $call.lit = jsonString($rx.re);
     return $call;
 }
 
@@ -930,4 +1062,17 @@ func quoted(text as string) {
     $q = strings.replace($q, "\\u003c", "<");
     $q = strings.replace($q, "\\u003e", ">");
     return strings.replace($q, "\\u0026", "&");
+}
+
+/**
+ * Cut text for an error message to `EXCERPT` code points.
+ *
+ * @param text {string} the text, possibly long
+ * @return {string} the text, with `...` after it when cut
+ */
+func cut(text as string) {
+    if (len($text) <= EXCERPT) {
+        return $text;
+    }
+    return strings.substring($text, 0, EXCERPT) + "...";
 }
