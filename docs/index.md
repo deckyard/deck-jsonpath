@@ -99,4 +99,4 @@ position, so a long query from a user does not produce a long message.
 
 ## Requirements
 
-Jennifer 0.25.0 or newer, default or `jennifer-tiny` binary.
+Jennifer 0.26.0 or newer, default or `jennifer-tiny` binary.
