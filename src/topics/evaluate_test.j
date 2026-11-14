@@ -154,6 +154,7 @@ func testRunawayQueriesStop() {
         find($doc, $p);
         missed("a runaway query finished");
     } catch (e) {
+        testing.assertEqual($e.kind, "limit");
         testing.assertTrue(strings.contains($e.message, "more than 20000 nodes of work"));
     }
     $p.maxNodes = 10;
@@ -162,6 +163,7 @@ func testRunawayQueriesStop() {
         find(json.decode("[[[[[[[[[[[[1]]]]]]]]]]]]"), $p);
         missed("a deep descent passed a limit of 10");
     } catch (e) {
+        testing.assertEqual($e.kind, "limit");
         testing.assertTrue(strings.contains($e.message, "more than 10 nodes of work"));
     }
 }
@@ -180,7 +182,9 @@ func limited(doc as json.Value, query as string, limit as int) {
     try {
         find($doc, $p);
     } catch (e) {
-        testing.assertEqual($e.kind, ERROR_KIND);
+        if ($e.kind != "limit") {
+            testing.assertEqual($e.kind, ERROR_KIND);
+        }
         return $e.message;
     }
     return "";

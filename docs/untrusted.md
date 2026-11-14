@@ -17,7 +17,7 @@ is cost time and memory. The deck bounds both.
   checked before the work is done: `$[*,*,*,...]` fails before it builds the
   nodes, and nested descendant filters (`$..[?@..[?@..*]]`, whose cost grows
   with the cube of the document depth) fail once their total passes the
-  limit. Past it the query fails with `Error{kind: "jsonpath"}`. Lower it
+  limit. Past it the query fails with `Error{kind: "limit"}`. Lower it
   for untrusted queries:
 
   ```jennifer

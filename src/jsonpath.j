@@ -12,7 +12,8 @@
  * index, slice and filter selectors, descendant segments, comparisons, the
  * logical operators, and the functions `length`, `count`, `match`, `search`
  * and `value`. Regular expressions are I-Regexp (RFC 9485), translated onto
- * RE2. Every failure is `Error{kind: "jsonpath"}`.
+ * RE2. Every failure is `Error{kind: "jsonpath"}`, except a query past its
+ * work budget, kind `"limit"`.
  *
  * The implementation is split into topic files spliced in with `include`;
  * this file is the module boundary.

@@ -14,7 +14,7 @@ import "@deckyard/jsonpath/" as jsonpath;
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `ERROR_KIND` | `"jsonpath"` | the `kind` of every error the deck throws |
+| `ERROR_KIND` | `"jsonpath"` | the `kind` of every error the deck throws, except the work budget (`"limit"`) |
 | `MAX_NESTING` | `64` | how deep parentheses, filters and calls may nest |
 | `MAX_NODES` | `1000000` | the default `Path.maxNodes`, the work one run of a query may do |
 | `MAX_INDEX` | `9007199254740991` | the largest index or slice bound, 2^53 - 1 |

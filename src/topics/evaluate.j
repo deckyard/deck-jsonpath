@@ -96,10 +96,10 @@ export func isValid(path as string) {
  * @param doc {json.Value} the document
  * @param path {Path} the query, from `compile`
  * @return {list of Match} the matches; empty when nothing matches
- * @throws {Error} kind `"jsonpath"` when the query needs more than
- *   `path.maxNodes` nodes of work, when a `match` / `search` pattern from
- *   the document is valid I-Regexp that RE2 cannot compile, or when `path`
- *   does not come from `compile`
+ * @throws {Error} kind `"limit"` when the query needs more than
+ *   `path.maxNodes` nodes of work; kind `"jsonpath"` when a `match` /
+ *   `search` pattern from the document is valid I-Regexp that RE2 cannot
+ *   compile, or when `path` does not come from `compile`
  */
 export func find(doc as json.Value, path as Path) {
     def w as Work init run($doc, $path, TRACK_POINTER | TRACK_PATH);
@@ -118,9 +118,9 @@ export func find(doc as json.Value, path as Path) {
  * @param doc {json.Value} the document
  * @param path {string} the query
  * @return {list of json.Value} the values, in order
- * @throws {Error} kind `"jsonpath"` when the query is not valid, when it
- *   needs more than `MAX_NODES` nodes of work, or when a pattern is valid
- *   I-Regexp that RE2 cannot compile
+ * @throws {Error} kind `"jsonpath"` when the query is not valid or a pattern
+ *   is valid I-Regexp that RE2 cannot compile; kind `"limit"` when it needs
+ *   more than `MAX_NODES` nodes of work
  */
 export func query(doc as json.Value, path as string) {
     def w as Work init run($doc, compile($path), 0);
@@ -140,9 +140,9 @@ export func query(doc as json.Value, path as string) {
  * @param doc {json.Value} the document
  * @param path {string} the query
  * @return {list of string} the pointers, in order; `""` is the root
- * @throws {Error} kind `"jsonpath"` when the query is not valid, when it
- *   needs more than `MAX_NODES` nodes of work, or when a pattern is valid
- *   I-Regexp that RE2 cannot compile
+ * @throws {Error} kind `"jsonpath"` when the query is not valid or a pattern
+ *   is valid I-Regexp that RE2 cannot compile; kind `"limit"` when it needs
+ *   more than `MAX_NODES` nodes of work
  */
 export func paths(doc as json.Value, path as string) {
     def w as Work init run($doc, compile($path), TRACK_POINTER);
@@ -161,9 +161,9 @@ export func paths(doc as json.Value, path as string) {
  * @param doc {json.Value} the document
  * @param path {string} the query
  * @return {list of string} the paths, e.g. `$['store']['book'][0]`
- * @throws {Error} kind `"jsonpath"` when the query is not valid, when it
- *   needs more than `MAX_NODES` nodes of work, or when a pattern is valid
- *   I-Regexp that RE2 cannot compile
+ * @throws {Error} kind `"jsonpath"` when the query is not valid or a pattern
+ *   is valid I-Regexp that RE2 cannot compile; kind `"limit"` when it needs
+ *   more than `MAX_NODES` nodes of work
  */
 export func normalizedPaths(doc as json.Value, path as string) {
     def w as Work init run($doc, compile($path), TRACK_PATH);
@@ -187,8 +187,8 @@ export func normalizedPaths(doc as json.Value, path as string) {
  * @param path {Path} the parsed query
  * @param track {int} `TRACK_POINTER` and `TRACK_PATH` bits: what to build
  * @return {Work} the state; the result is `out[from:n]`
- * @throws {Error} kind `"jsonpath"` when `path` is no compiled query, or
- *   the query needs more than `path.maxNodes` nodes of work
+ * @throws {Error} kind `"jsonpath"` when `path` is no compiled query; kind
+ *   `"limit"` when the query needs more than `path.maxNodes` nodes of work
  */
 func run(doc as json.Value, path as Path, track as int) {
     if ($path.root < 0 or $path.root >= len($path.nodes) or
@@ -234,7 +234,7 @@ func run(doc as json.Value, path as Path, track as int) {
  * @param nodes {int} the nodes about to be produced, tested or visited
  * @param limit {int} `Path.maxNodes`
  * @return {Work} the state with the work counted
- * @throws {Error} kind `"jsonpath"` when the total would pass `limit`
+ * @throws {Error} kind `"limit"` when the total would pass `limit`
  */
 func spend(w as Work, nodes as int, limit as int) {
     if ($w.used + $nodes > $limit) {
@@ -245,13 +245,18 @@ func spend(w as Work, nodes as int, limit as int) {
 }
 
 /**
- * Raise the work-limit error.
+ * Raise the work-limit error: a reached cap, so kind `"limit"`, with the
+ * message `fail` would write.
  *
  * @param limit {int} `Path.maxNodes`
- * @throws {Error} always, with `kind` `"jsonpath"`
+ * @throws {Error} always, with `kind` `"limit"`
  */
 func overLimit(limit as int) {
-    fail("the query needs more than " + convert.toString($limit) + " nodes of work");
+    throw Error{
+        kind: "limit",
+        message: "jsonpath: the query needs more than " + convert.toString($limit) +
+            " nodes of work"
+    };
 }
 
 /**
@@ -630,7 +635,7 @@ func children(path as Path, loc as Loc, track as int, w as Work) {
  * @param room {int} the most nodes to visit, visited and queued together
  * @param limit {int} `Path.maxNodes`, for the error
  * @return {list of Loc} the node and its container descendants
- * @throws {Error} kind `"jsonpath"` past `room`
+ * @throws {Error} kind `"limit"` past `room`
  */
 func descendants(loc as Loc, track as int, room as int, limit as int) {
     if ($room < 1) {
