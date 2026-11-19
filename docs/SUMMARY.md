@@ -13,3 +13,4 @@
 # Reference
 
 - [Cheatsheet](cheatsheet.md)
+- [Design](design.md)
