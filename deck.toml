@@ -1,6 +1,6 @@
 [package]
 name = "@deckyard/jsonpath"
-version = "0.1.0"
+version = "0.2.0"
 description = "Query JSON values with RFC 9535 JSONPath, checked against the official compliance test suite"
 license = "LGPL-3.0-only"
 authors = ["mplx <mplx@jennifer-lang.dev>"]
