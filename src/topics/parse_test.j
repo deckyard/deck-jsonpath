@@ -80,7 +80,41 @@ func testSlicesParse() {
     testing.assertEqual($p.nodes[$seg.kids[2]].step, 1);
 }
 
+/**
+ * The kind a query fails to compile with, or "" when it compiles.
+ *
+ * @param path {string} the query
+ * @return {string} the error kind
+ */
+func compileKind(path as string) {
+    try {
+        compile($path);
+    } catch (e) {
+        return $e.kind;
+    }
+    return "";
+}
+
+/**
+ * A filter nesting n parentheses around `@`.
+ *
+ * @param n {int} the depth
+ * @return {string} the query
+ */
+func parens(n as int) {
+    return "$[?" + strings.repeat("(", $n) + "@" + strings.repeat(")", $n) + "]";
+}
+
 func testDeepNestingIsRefusedEarly() {
+    # jennifer-tiny's call-depth budget (120 nested calls, blocks and
+    # expressions) runs out after a few levels, before MAX_NESTING: compile
+    # then fails with the interpreter's "limit", not the deck's own error.
+    if (meta.BUILD == "tinygo") {
+        testing.assertEqual(isValid(parens(4)), true);
+        testing.assertEqual(compileKind(parens(MAX_NESTING - 1)), "limit");
+        testing.assertEqual(compileKind(parens(20000)), "limit");
+        return;
+    }
     def ok as string init "$[?" + strings.repeat("(", MAX_NESTING - 1) + "@" +
         strings.repeat(")", MAX_NESTING - 1) + "]";
     testing.assertEqual(isValid($ok), true);

@@ -10,6 +10,7 @@
  * runs only from a checkout.
  */
 use fs;
+use meta;
 use testing;
 
 include "topics/core_test.j";

@@ -76,7 +76,8 @@ the first is enough.
 ## Errors
 
 Every failure is `Error{kind: "jsonpath"}`, except a query past its work
-budget (`maxNodes`), which is kind `"limit"`. A query that is not valid RFC
+budget (`maxNodes`), and on `jennifer-tiny` a query nested past the
+interpreter's call-depth limit, which are kind `"limit"`. A query that is not valid RFC
 9535 fails in `compile`, `query`, `paths` and `normalizedPaths` with the
 reason and the position:
 

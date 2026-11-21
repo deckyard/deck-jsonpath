@@ -73,7 +73,8 @@ message starting `jsonpath: `, except the work budget: a run past
 `Path.maxNodes` is kind `"limit"`. Nesting past `MAX_NESTING` stays
 `"jsonpath"`, since it is a compile error with a position. `compile`
 rewraps any other error raised while parsing as `cannot parse "<query>":
-...`. A hand-edited `Path` whose node indexes are inconsistent can still
+...`, keeping a `"limit"` as `"limit"` (generic kinds pass on) and
+rethrowing `"cancelled"` unchanged. A hand-edited `Path` whose node indexes are inconsistent can still
 fail with kind `"runtime"`; `find` checks only that its root is a query.
 
 ## Security and limits
@@ -84,6 +85,10 @@ queries](untrusted.md) has the figures).
 
 - `MAX_NESTING` (64) bounds parentheses, filters and function calls, checked
   while parsing, before the interpreter's call-depth limit could be reached.
+  On `jennifer-tiny` that limit (120 nested calls, blocks and expressions)
+  comes first: the recursive parser runs out of it after a few levels of
+  nesting, and `compile` fails with kind `"limit"`. Ordinary queries nest two
+  or three levels and compile there.
 - One work budget per run, `Path.maxNodes` (`MAX_NODES`, 1,000,000, by
   default): every node produced, every child a filter tests, every container
   a descendant segment visits, every name or index selector per input node,
@@ -103,6 +108,9 @@ queries](untrusted.md) has the figures).
   unchanged under `testdata/cts/` (BSD-2; the commit is recorded beside
   it). One test runs every case and checks the values, the normalized paths,
   and that each pointer leads back to its value.
+- The overlays also run on `jennifer-tiny-dev`, where documents nest at most
+  64 levels and the parser runs out of call depth after a few: the deep
+  tests use smaller documents there and expect `"limit"` from `compile`.
 - `jvc` runs the overlays from a copy of `src/` without `testdata/`, where
   the suite is skipped; a separate test fails if a run from the checkout
   cannot find it.
@@ -113,6 +121,8 @@ queries](untrusted.md) has the figures).
 ## Known limitations and open questions
 
 - `json.Value` only.
+- On `jennifer-tiny` a filter nests only a few levels before the parser
+  reaches the interpreter's call-depth limit.
 - One node of work costs 10 to 25 microseconds, so the default budget allows
   10 to 25 seconds of work; a whole-document `$..*` on a large file can pass
   it. Lower `maxNodes` for untrusted queries.

@@ -112,12 +112,26 @@ func testComparisons() {
     testing.assertEqual(len(query($doc, "$[?value(@.a) == 1 || @.a == '1']")), 3);
 }
 
+/**
+ * How deep a test document may nest: json.decode refuses more than 64
+ * levels on jennifer-tiny.
+ *
+ * @param want {int} the depth wanted on the default build
+ * @return {int} the depth to use on this build
+ */
+func docDepth(want as int) {
+    if (meta.BUILD == "tinygo") {
+        return 64;
+    }
+    return $want;
+}
+
 func testDeepDocumentsWalkWithoutRecursion() {
-    def doc as json.Value init json.decode(strings.repeat("[", 900) + "7" +
-        strings.repeat("]", 900));
+    def n as int init docDepth(900);
+    def doc as json.Value init json.decode(strings.repeat("[", $n) + "7" + strings.repeat("]", $n));
     def found as list of json.Value init query($doc, "$..*");
-    testing.assertEqual(len($found), 900);
-    testing.assertEqual(json.asInt($found[899]), 7);
+    testing.assertEqual(len($found), $n);
+    testing.assertEqual(json.asInt($found[$n - 1]), 7);
 }
 
 func testSingularQueriesRespectTypes() {
@@ -146,7 +160,8 @@ func testAbsoluteSubqueriesRunOnce() {
 }
 
 func testRunawayQueriesStop() {
-    def doc as json.Value init json.decode(strings.repeat("[", 300) + strings.repeat("]", 300));
+    def n as int init docDepth(300);
+    def doc as json.Value init json.decode(strings.repeat("[", $n) + strings.repeat("]", $n));
     def p as Path init compile("$..*..*..*");
     testing.assertEqual($p.maxNodes, MAX_NODES);
     $p.maxNodes = 20000;

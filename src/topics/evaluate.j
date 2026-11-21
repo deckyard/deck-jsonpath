@@ -67,8 +67,15 @@ export func compile(path as string) {
     try {
         return parse($path);
     } catch (e) {
-        if ($e.kind == ERROR_KIND) {
+        if ($e.kind == ERROR_KIND or $e.kind == "cancelled") {
             throw $e;
+        }
+        # A cap keeps its kind: jennifer-tiny's call-depth budget can run out
+        # before MAX_NESTING does.
+        def message as string init "jsonpath: cannot parse " + quoted(cut($path)) + ": " +
+            $e.message;
+        if ($e.kind == "limit") {
+            throw Error{kind: "limit", message: $message};
         }
         fail("cannot parse " + quoted(cut($path)) + ": " + $e.message);
     }

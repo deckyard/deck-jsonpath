@@ -9,6 +9,8 @@ is cost time and memory. The deck bounds both.
 
 - **Nesting.** Parentheses, filters and function calls nest at most
   `MAX_NESTING` (64) levels deep; a deeper query fails in `compile` at once.
+  On `jennifer-tiny` the interpreter's call-depth limit stops a query after a
+  few levels, with kind `"limit"`.
 - **Work.** One run of a query may do at most `Path.maxNodes` nodes of
   work, `MAX_NODES` (1,000,000) by default. Every node a selector produces
   counts, every child a filter tests, every container a descendant segment
