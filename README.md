@@ -45,7 +45,7 @@ for (def m in jsonpath.find($doc, $p)) {
 
 ## Requirements
 
-Jennifer 0.26.0 or newer, default or `jennifer-tiny` binary. No capability.
+Jennifer 0.27.0 or newer, default or `jennifer-tiny` binary. No capability.
 
 ## Development
 

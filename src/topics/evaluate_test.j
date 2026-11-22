@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 # jsonpath - white-box tests for the evaluate topic. Spliced into jsonpath_test.j
 # via include.
@@ -128,7 +128,8 @@ func docDepth(want as int) {
 
 func testDeepDocumentsWalkWithoutRecursion() {
     def n as int init docDepth(900);
-    def doc as json.Value init json.decode(strings.repeat("[", $n) + "7" + strings.repeat("]", $n));
+    def doc as json.Value init json.decode(strings.replicate("[", $n) + "7" +
+        strings.replicate("]", $n));
     def found as list of json.Value init query($doc, "$..*");
     testing.assertEqual(len($found), $n);
     testing.assertEqual(json.asInt($found[$n - 1]), 7);
@@ -161,7 +162,7 @@ func testAbsoluteSubqueriesRunOnce() {
 
 func testRunawayQueriesStop() {
     def n as int init docDepth(300);
-    def doc as json.Value init json.decode(strings.repeat("[", $n) + strings.repeat("]", $n));
+    def doc as json.Value init json.decode(strings.replicate("[", $n) + strings.replicate("]", $n));
     def p as Path init compile("$..*..*..*");
     testing.assertEqual($p.maxNodes, MAX_NODES);
     $p.maxNodes = 20000;
@@ -212,9 +213,13 @@ func testWorkIsCountedPerFind() {
     # Filter subqueries count too: 2 tests, then 2 elements per subquery.
     testing.assertEqual(limited($grid, "$[?@[*]]", 6), "");
     testing.assertTrue(strings.contains(limited($grid, "$[?@[*]]", 5), "more than 5 nodes"));
-    def chain as json.Value init json.decode(strings.repeat("[", 60) + strings.repeat("]", 60));
+    def chain as json.Value init json.decode(strings.replicate("[", 60) + strings.replicate(
+        "]",
+        60));
     testing.assertTrue(strings.contains(limited($chain, "$..[?@..[?@..*]]", 5000), "more than"));
-    def short as json.Value init json.decode(strings.repeat("[", 20) + strings.repeat("]", 20));
+    def short as json.Value init json.decode(strings.replicate("[", 20) + strings.replicate(
+        "]",
+        20));
     testing.assertEqual(len(query($short, "$..[?@..[?@..*]]")), 17);
 }
 
@@ -225,7 +230,7 @@ func testWorkIsCheckedBeforeItIsDone() {
         $wide[] = jsonInt($i);
         $i = $i + 1;
     }
-    def stars as string init "$[" + strings.join(lists.map(lists.range(0, 200), star), ",") + "]";
+    def stars as string init "$[" + strings.join(lists.map(0..200, star), ",") + "]";
     testing.assertEqual(
         limited(json.list($wide), $stars, 1000),
         "jsonpath: the query needs more than 1000 nodes of work");
@@ -288,7 +293,7 @@ func removeAll(doc as json.Value, query as string) {
         def parts as list of string init [];
         for (def token in strings.split($ptr, "/")) {
             if (regex.matches("^(0|[1-9][0-9]*)$", $token)) {
-                $parts[] = strings.repeat("0", 16 - len($token)) + $token;
+                $parts[] = strings.replicate("0", 16 - len($token)) + $token;
             } else {
                 $parts[] = $token;
             }

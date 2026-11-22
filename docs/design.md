@@ -132,7 +132,8 @@ queries](untrusted.md) has the figures).
 
 ## Dependencies on the interpreter
 
-- Floor `>=0.26.0` for `jennifer` and `jennifer-tiny`.
+- Floor `>=0.27.0` for `jennifer` and `jennifer-tiny`: `strings.replicate`
+  arrived in 0.27.0.
 - `json`'s pointer accessors (`typeOf` reporting `"missing"`, structural
   `==` on values, `len` counting code points) and `regex` on RE2.
 - The work budget as kind `"limit"` follows `jennifer`'s M28.54 and the

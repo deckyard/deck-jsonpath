@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 # jsonpath - the parser: RFC 9535's grammar (section 2 and appendix A) and the
 # well-typedness rules of section 2.4.3. Spliced into jsonpath.j via include.
@@ -152,9 +152,7 @@ func excerpt(p as Parser) {
     if ($start < 0) {
         $start = 0;
     }
-    def text as string init quoted(strings.join(
-        lists.slice($p.chars, $start, $start + EXCERPT),
-        ""));
+    def text as string init quoted(strings.join($p.chars[$start..$start + EXCERPT], ""));
     if ($start > 0) {
         $text = "..." + $text;
     }
@@ -365,7 +363,7 @@ func parseDotted(p as Parser, descendant as int) {
         while (isNameChar(peek($p))) {
             $p.pos = $p.pos + 1;
         }
-        $sel.text = strings.join(lists.slice($p.chars, $start, $p.pos), "");
+        $sel.text = strings.join($p.chars[$start..$p.pos], "");
     } else {
         failAt($p, "expected a member name or * after the dot, found " + describeChar($ch));
     }
@@ -494,7 +492,7 @@ func parseInt(p as Parser) {
     while (isDigit(peek($p))) {
         $p.pos = $p.pos + 1;
     }
-    def digits as string init strings.join(lists.slice($p.chars, $first, $p.pos), "");
+    def digits as string init strings.join($p.chars[$first..$p.pos], "");
     if ($digits == "") {
         failAt($p, "expected digits");
     }
@@ -615,7 +613,7 @@ func parseHex4(p as Parser) {
     if ($end > len($p.chars)) {
         $end = len($p.chars);
     }
-    def text as string init strings.join(lists.slice($p.chars, $p.pos, $end), "");
+    def text as string init strings.join($p.chars[$p.pos..$end], "");
     if (not regex.matches('^[0-9A-Fa-f]{4}$', $text)) {
         failAt($p, "\\u needs four hex digits");
     }
@@ -833,7 +831,7 @@ func parsePrimary(p as Parser) {
             ((peek($p) >= "a" and peek($p) <= "z") or isDigit(peek($p)) or peek($p) == "_")) {
             $p.pos = $p.pos + 1;
         }
-        def word as string init strings.join(lists.slice($p.chars, $start, $p.pos), "");
+        def word as string init strings.join($p.chars[$start..$p.pos], "");
         if (peek($p) == "(") {
             $p = parseFunction($p, $word);
             return $p;
@@ -867,7 +865,7 @@ func parseNumber(p as Parser) {
     while (peek($p) != "" and regex.matches("^[-+0-9.eE]$", peek($p))) {
         $p.pos = $p.pos + 1;
     }
-    def text as string init strings.join(lists.slice($p.chars, $start, $p.pos), "");
+    def text as string init strings.join($p.chars[$start..$p.pos], "");
     if (not regex.matches("^-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][-+]?[0-9]+)?$", $text)) {
         $p.pos = $start;
         failAt($p, "malformed number " + quoted(cut($text)));
@@ -1074,5 +1072,5 @@ func cut(text as string) {
     if (len($text) <= EXCERPT) {
         return $text;
     }
-    return strings.substring($text, 0, EXCERPT) + "...";
+    return $text[..EXCERPT] + "...";
 }

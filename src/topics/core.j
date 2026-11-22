@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 # jsonpath - the shared types, errors and path escaping. Spliced into
 # jsonpath.j via include.
@@ -167,8 +167,8 @@ func normalName(name as string) {
         } elseif ($cp == 9) {
             $out[] = "\\t";
         } else {
-            def hex as string init convert.toString($cp, 16);
-            $out[] = "\\u" + strings.repeat("0", 4 - len($hex)) + $hex;
+            def hex as string init io.sprintf("%d|base=16", $cp);
+            $out[] = "\\u" + strings.replicate("0", 4 - len($hex)) + $hex;
         }
     }
     return strings.join($out, "");

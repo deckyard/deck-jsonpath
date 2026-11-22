@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 # jsonpath - white-box tests for the parse topic. Spliced into jsonpath_test.j
 # via include.
@@ -102,7 +102,7 @@ func compileKind(path as string) {
  * @return {string} the query
  */
 func parens(n as int) {
-    return "$[?" + strings.repeat("(", $n) + "@" + strings.repeat(")", $n) + "]";
+    return "$[?" + strings.replicate("(", $n) + "@" + strings.replicate(")", $n) + "]";
 }
 
 func testDeepNestingIsRefusedEarly() {
@@ -115,16 +115,17 @@ func testDeepNestingIsRefusedEarly() {
         testing.assertEqual(compileKind(parens(20000)), "limit");
         return;
     }
-    def ok as string init "$[?" + strings.repeat("(", MAX_NESTING - 1) + "@" +
-        strings.repeat(")", MAX_NESTING - 1) + "]";
+    def ok as string init "$[?" + strings.replicate("(", MAX_NESTING - 1) + "@" +
+        strings.replicate(")", MAX_NESTING - 1) + "]";
     testing.assertEqual(isValid($ok), true);
-    def deep as string init "$[?" + strings.repeat("(", 20000) + "@" + strings.repeat(")", 20000) +
+    def deep as string init "$[?" + strings.replicate("(", 20000) + "@" +
+        strings.replicate(")", 20000) +
         "]";
     testing.assertTrue(strings.contains(whyNot($deep), "nested deeper than 64 levels"));
-    def filters as string init "$" + strings.repeat("[?@", 100) + strings.repeat("]", 100);
+    def filters as string init "$" + strings.replicate("[?@", 100) + strings.replicate("]", 100);
     testing.assertTrue(strings.contains(whyNot($filters), "nested deeper than"));
-    def calls as string init "$[?" + strings.repeat("length(", 100) + "@" +
-        strings.repeat(")", 100) + "==1]";
+    def calls as string init "$[?" + strings.replicate("length(", 100) + "@" +
+        strings.replicate(")", 100) + "==1]";
     testing.assertTrue(strings.contains(whyNot($calls), "nested deeper than"));
 }
 
@@ -136,12 +137,12 @@ func testMessagesQuoteTheQueryReadably() {
 }
 
 func testErrorMessagesAreBounded() {
-    def long as string init "$.a" + strings.repeat("x", 100000) + "]";
+    def long as string init "$.a" + strings.replicate("x", 100000) + "]";
     def why as string init whyNot($long);
     testing.assertTrue(len($why) < 200);
     testing.assertTrue(strings.contains($why, "at position 100003 of ...\""));
     testing.assertTrue(strings.endsWith($why, "x]\""));
-    testing.assertTrue(len(whyNot("$[?" + strings.repeat("a", 5000) + "(@)]")) < 200);
-    testing.assertTrue(len(whyNot("$[?@ == " + strings.repeat("1", 5000) + "e]")) < 200);
+    testing.assertTrue(len(whyNot("$[?" + strings.replicate("a", 5000) + "(@)]")) < 200);
+    testing.assertTrue(len(whyNot("$[?@ == " + strings.replicate("1", 5000) + "e]")) < 200);
     testing.assertEqual(cut("short"), "short");
 }

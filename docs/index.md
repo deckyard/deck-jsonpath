@@ -57,7 +57,7 @@ for (def ptr in jsonpath.paths($doc, "$..book[?@.price > 10]")) {
     def parts as list of string init [];
     for (def token in strings.split($ptr, "/")) {
         if (regex.matches("^(0|[1-9][0-9]*)$", $token)) {
-            $parts[] = strings.repeat("0", 16 - len($token)) + $token;
+            $parts[] = strings.replicate("0", 16 - len($token)) + $token;
         } else {
             $parts[] = $token;
         }
@@ -101,4 +101,4 @@ position, so a long query from a user does not produce a long message.
 
 ## Requirements
 
-Jennifer 0.26.0 or newer, default or `jennifer-tiny` binary.
+Jennifer 0.27.0 or newer, default or `jennifer-tiny` binary.

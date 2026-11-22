@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 # jsonpath - white-box tests for the functions topic. Spliced into jsonpath_test.j
 # via include.
@@ -60,7 +60,7 @@ func testClassHyphenFollowsTheGrammar() {
 
 func testEscapesAreScannedLocally() {
     def chars as list of string init strings.chars(
-        "\\p" + LBRACE + "Lu" + RBRACE + "x" + strings.repeat("y", 50) + RBRACE);
+        "\\p" + LBRACE + "Lu" + RBRACE + "x" + strings.replicate("y", 50) + RBRACE);
     testing.assertEqual(escape($chars, 1).next, 6);
     def far as list of string init strings.chars("\\p" + LBRACE + "Luuuuu" + RBRACE);
     testing.assertEqual(escape($far, 1).ok, false);
@@ -83,7 +83,7 @@ func testPatternsRe2CannotRunThrow() {
         testing.assertTrue(strings.contains($e.message, "RE2 cannot run a valid I-Regexp"));
     }
     def ok as list of json.Value init query(
-        json.decode(json.encode([strings.repeat("a", 1000)])),
+        json.decode(json.encode([strings.replicate("a", 1000)])),
         "$[?match(@, 'a" + LBRACE + "1000" + RBRACE + "')]");
     testing.assertEqual(len($ok), 1);
 }

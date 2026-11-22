@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 # jsonpath - the function extensions of RFC 9535 section 2.4 (length, count,
 # match, search, value) and the I-Regexp (RFC 9485) translation onto RE2.
@@ -166,7 +166,7 @@ func translate(pattern as string) {
             if (not $canQuantify or $close < 0) {
                 return $bad;
             }
-            $out[] = LBRACE + strings.join(lists.slice($chars, $i, $close), "") + RBRACE;
+            $out[] = LBRACE + strings.join($chars[$i..$close], "") + RBRACE;
             $i = $close + 1;
             $canQuantify = false;
         } elseif ($c == ".") {
@@ -214,7 +214,7 @@ func rangeEnd(chars as list of string, from as int) {
     while ($i < len($chars) and isDigit($chars[$i])) {
         $i = $i + 1;
     }
-    def low as string init strings.join(lists.slice($chars, $from, $i), "");
+    def low as string init strings.join($chars[$from..$i], "");
     if ($low == "" or $i >= len($chars)) {
         return -1;
     }
@@ -224,7 +224,7 @@ func rangeEnd(chars as list of string, from as int) {
         while ($i < len($chars) and isDigit($chars[$i])) {
             $i = $i + 1;
         }
-        def high as string init strings.join(lists.slice($chars, $first, $i), "");
+        def high as string init strings.join($chars[$first..$i], "");
         if ($high != "" and digitsBefore($high, $low)) {
             return -1;
         }
@@ -299,7 +299,7 @@ func escape(chars as list of string, from as int) {
     if ($close >= len($chars) or $chars[$close] != RBRACE) {
         return $bad;
     }
-    def name as string init strings.join(lists.slice($chars, $from + 2, $close), "");
+    def name as string init strings.join($chars[$from + 2..$close], "");
     if (not regex.matches(
         "^(L[lmotu]?|M[cen]?|N[dlo]?|P[cdefios]?|Z[lps]?|S[ckmo]?|C[cfno]?)$",
         $name)) {
